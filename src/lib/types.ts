@@ -1,0 +1,108 @@
+export interface BackendConfig {
+  baseUrl: string;
+  token: string;
+}
+
+export type LanguageChoice = "auto" | "uz" | "ru" | "en";
+export type AIAction = "summary" | "key_points" | "action_items" | "translation";
+export type TranscriptionStatus =
+  | "not_transcribed"
+  | "queued"
+  | "loading_model"
+  | "transcribing"
+  | "completed"
+  | "failed";
+
+export interface Transcription {
+  text: string;
+  language: string;
+  language_probability: number;
+  model: string;
+}
+
+export interface AISummary {
+  operation: "summary";
+  language: Exclude<LanguageChoice, "auto">;
+  summary: string;
+  model: string;
+}
+
+export interface AIKeyPoints {
+  operation: "key_points";
+  language: Exclude<LanguageChoice, "auto">;
+  key_points: string[];
+  model: string;
+}
+
+export interface AIActionItems {
+  operation: "action_items";
+  language: Exclude<LanguageChoice, "auto">;
+  action_items: { task: string; owner: string | null; due: string | null }[];
+  decisions: string[];
+  model: string;
+}
+
+export interface AITranslation {
+  operation: "translation";
+  source_language: Exclude<LanguageChoice, "auto">;
+  target_language: Exclude<LanguageChoice, "auto">;
+  translation: string;
+  model: string;
+}
+
+export type AIResult = AISummary | AIKeyPoints | AIActionItems | AITranslation;
+
+export type AIJobStatus =
+  | "queued"
+  | "downloading"
+  | "loading_model"
+  | "processing"
+  | "completed"
+  | "failed";
+
+export interface AIJob {
+  id: string;
+  recording_id: string;
+  operation: AIAction;
+  status: AIJobStatus;
+  progress: number;
+  message: string;
+  error: string | null;
+  result: AIResult | null;
+}
+
+export interface AIModelStatus {
+  name: string;
+  filename: string;
+  size_bytes: number;
+  downloaded: boolean;
+  loaded: boolean;
+  status: "not_downloaded" | "downloaded" | "loaded" | "loading" | "failed";
+  error: string | null;
+}
+
+export interface Recording {
+  id: string;
+  name: string;
+  created_at: string;
+  duration: number;
+  media_type: string;
+  transcription: Transcription | null;
+  transcription_status: TranscriptionStatus;
+  ai_results: Partial<Record<AIAction, AIResult>>;
+  audioUrl: string | null;
+}
+
+export interface RecordingList {
+  recordings: Omit<Recording, "audioUrl">[];
+}
+
+export interface TranscriptionJob {
+  id: string;
+  recording_id: string;
+  status: TranscriptionStatus;
+  progress: number;
+  message: string;
+  error: string | null;
+  transcription: Transcription | null;
+}

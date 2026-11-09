@@ -1,0 +1,35 @@
+[project]
+name = "desktop-app-backend"
+version = "1.0.0"
+description = "Local speech transcription API for Aureon"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.135,<1.0",
+    "faster-whisper>=1.2,<2",
+    "huggingface-hub>=0.21,<3",
+    "llama-cpp-python>=0.3.36,<0.4",
+    "httpx>=0.28,<1.0",
+    "platformdirs>=4.4,<5",
+    "pydantic>=2.12,<3.0",
+    "pydantic-settings>=2.12,<3.0",
+    "python-multipart>=0.0.20,<1",
+    "uvicorn[standard]>=0.41,<1.0",
+    "av>=11,<19",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0,<10.0",
+    "ruff>=0.15,<1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

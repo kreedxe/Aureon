@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Aureon",
+  "version": "0.1.0",
+  "identifier": "com.aureon.voice",
+  "build": {
+    "beforeDevCommand": "pnpm dev:vite",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Aureon",
+        "width": 1240,
+        "height": 840,
+        "minWidth": 860,
+        "minHeight": 620,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost http://127.0.0.1:*; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "macOS": {
+      "infoPlist": "Info.plist"
+    },
+    "targets": ["app", "dmg", "nsis", "appimage", "deb"]
+  }
+}
