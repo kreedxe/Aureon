@@ -69,3 +69,13 @@ def test_cors_preflight_is_limited_to_application_origins() -> None:
     )
     assert allowed.headers.get("access-control-allow-origin") == "http://127.0.0.1:1420"
     assert "access-control-allow-origin" not in denied.headers
+    update = request(
+        "OPTIONS",
+        "/api/v1/products/example",
+        headers={
+            "Origin": "http://127.0.0.1:1420",
+            "Access-Control-Request-Method": "PUT",
+            "Access-Control-Request-Headers": "x-session-token,content-type",
+        },
+    )
+    assert update.headers.get("access-control-allow-origin") == "http://127.0.0.1:1420"

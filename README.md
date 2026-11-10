@@ -1,11 +1,11 @@
 # Aureon
 
-Aureon is a cross-platform desktop voice recorder with local speech transcription. It extends the existing Tauri 2 + Rust + React/TypeScript + FastAPI architecture. Recordings exist only for the current application session; audio recognition runs locally in Python with faster-whisper.
+Aureon is a local-first desktop application foundation for a shop sales assistant. The existing Tauri 2 + Rust + React/TypeScript + FastAPI voice studio remains available, and a persistent local product catalog is now available for management and future product-grounded conversations. Product records are stored in SQLite; recordings remain temporary to the current session.
 
 ## Architecture
 
-- **React and TypeScript** provide the recording studio, session library, playback, and transcription display. The browser `MediaRecorder` API captures microphone audio; the frontend uploads it to the API but does not transcribe or persist it.
-- **FastAPI and Python** own session audio files, validation, recording metadata, transcription and AI job state, and local faster-whisper and llama.cpp inference.
+- **React and TypeScript** provide the recording studio, session library, product management, playback, and transcription display. The browser `MediaRecorder` API captures microphone audio; the frontend uploads it to the API but does not transcribe or persist it.
+- **FastAPI and Python** own session audio files, validation, recording metadata, transcription and AI job state, the product API, and local SQLite product storage. Speech and text inference use faster-whisper and llama.cpp.
 - **Rust and Tauri** start and supervise the backend, generate a per-launch session token and loopback port, wait for authenticated readiness, and stop the backend when the desktop app exits.
 
 See [docs/architecture.md](docs/architecture.md) for request flow and security boundaries.
@@ -14,7 +14,7 @@ See [docs/architecture.md](docs/architecture.md) for request flow and security b
 
 - Tauri 2, Rust, and Cargo.
 - React, strict TypeScript, Vite, Tailwind CSS, shadcn-style local components, Lucide React.
-- FastAPI, Pydantic, Uvicorn, HTTPX, faster-whisper, and uv.
+- FastAPI, Pydantic, Uvicorn, HTTPX, faster-whisper, SQLite, and uv.
 - Optional local AI text tools use llama-cpp-python with Qwen3 1.7B Instruct GGUF Q4_K_M.
 - `pnpm` for frontend dependencies; `uv` and `backend/pyproject.toml` for Python dependencies.
 
@@ -27,6 +27,7 @@ src/                         React presentation, recording hooks, API client
   components/ui/             Reusable controls, language selector, waveform
   features/recording/        Recording studio
   features/recordings/       Recording detail and empty state
+  features/products/         Local product catalog and editor
   hooks/                     Recorder and library UI state
   lib/                       API client, types, formatting, Tauri IPC
   styles/                    Tailwind theme and global styles
@@ -34,11 +35,11 @@ src-tauri/                   Rust lifecycle manager and Tauri configuration
   capabilities/              Least-privilege webview permissions
   src/                       Application entry point, commands, backend manager
 backend/                     Independent Python API and transcription service
-  app/api/routes/            Recording and transcription endpoints
+  app/api/routes/            Product, recording, and transcription endpoints
   app/core/                  Configuration and authentication
   app/schemas/               Pydantic request/response models
-  app/services/              Session storage and local transcription
-  tests/                      API and recording workflow tests
+  app/services/              SQLite catalog, session storage, and local inference
+  tests/                      Product, API, and recording workflow tests
 docs/                        Architecture documentation
 scripts/                     Development helpers
 ```
@@ -79,6 +80,14 @@ pnpm dev
 Vite provides HMR. Tauri starts the native window; Rust launches Uvicorn through uv in reload mode and supervises its lifecycle. The microphone is accessed by the webview using `getUserMedia` and `MediaRecorder`. If permission is denied or no input device is available, the studio displays an error.
 
 The backend binds only to `127.0.0.1`. Rust chooses the port and creates a random token for the application session. The frontend obtains both through the narrow `get_backend_config` Tauri command; neither URL nor secret is hardcoded in the frontend.
+
+## Local product catalog
+
+Select **Products** in the sidebar to create, edit, search, filter, sort, and delete catalog entries. Product names, descriptions, exact decimal prices, three-letter currency codes, stock counts, availability, category, optional brand, specifications, and timestamps are validated in Python and stored in a local SQLite database. Zero stock is reported as out of stock; discontinued listings remain distinct. All reads and writes go through the authenticated FastAPI API; React does not access SQLite.
+
+The product editor can optionally draft a description using the local Qwen model. The generator receives only product name, price/currency, category, brand, and supplied specifications; it does not save product data. The draft is inserted into the editable description field and explicitly marked for human review before the owner saves it. Model setup can require the documented first-use download; catalog CRUD works without the model.
+
+The database is created on first launch using the OS application-data directory through `platformdirs` (for example, `~/Library/Application Support/Aureon/Aureon/aureon.sqlite3` on macOS, `%LOCALAPPDATA%\\Aureon\\Aureon\\aureon.sqlite3` on Windows, and `~/.local/share/Aureon/aureon.sqlite3` on Linux). Product records persist across app sessions and stay on this device. The SQLite runtime is part of Python's standard library; no extra database package is needed.
 
 ## Local transcription and privacy
 
@@ -138,6 +147,8 @@ AI operations follow the same split: add or refine the Pydantic result schema in
 2. Add HTTP calls/types in `src/lib`; use hooks to connect asynchronous API state to the UI.
 3. Compose the feature in `src/app/App.tsx` or the layout. Keep business logic and persistence in Python.
 
-## Future SQLite and packaging
+## Next sales-assistant stages and packaging
 
-SQLite is intentionally not wired in. Any later database configuration, migrations, and repositories belong exclusively in Python. For distribution, package the backend and model-loading dependencies as a target-specific PyInstaller executable, configure it as a Tauri sidecar/resource, and validate startup, readiness, error reporting, cleanup, permissions, and shutdown on each supported OS. The model itself is downloaded on first use and cached separately; it is not currently bundled into the application installer.
+The persistent catalog is the first sales-assistant infrastructure stage. Live voice conversations, VAD and turn-taking, speech interruption, product-search tools in a conversation manager, local TTS, durable conversation history/reports, model setup/settings, and reviewed AI-generated product descriptions are not implemented yet. Do not treat the current recording/transcription workflow as a real-time sales conversation or claim those features are available.
+
+For distribution, package the backend and model-loading dependencies as a target-specific PyInstaller executable, configure it as a Tauri sidecar/resource, and validate startup, readiness, error reporting, cleanup, permissions, and shutdown on each supported OS. Models are downloaded on first use and cached separately; they are not currently bundled into the application installer.

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { MouseEvent } from "react";
 import {
   AudioLines,
+  Boxes,
   Check,
   Clock3,
   Mic,
@@ -9,6 +10,7 @@ import {
   Pencil,
   Plus,
   Search,
+  ShoppingBag,
   Sun,
   Trash2,
   X,
@@ -18,11 +20,13 @@ import type { Recording } from "@/lib/types";
 import { formatDuration, formatRecordingDate } from "@/lib/format";
 
 interface AppShellProps extends PropsWithChildren {
+  activeSection: "recordings" | "products";
   recordings: Recording[];
   selectedId: string | null;
   error: string | null;
   isLight: boolean;
   onSelect: (id: string) => void;
+  onNavigate: (section: "recordings" | "products") => void;
   onNewRecording: () => void;
   onRename: (id: string, name: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
@@ -32,11 +36,13 @@ interface AppShellProps extends PropsWithChildren {
 
 export function AppShell({
   children,
+  activeSection,
   recordings,
   selectedId,
   error,
   isLight,
   onSelect,
+  onNavigate,
   onNewRecording,
   onRename,
   onDelete,
@@ -54,51 +60,76 @@ export function AppShell({
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><AudioLines aria-hidden="true" size={18} strokeWidth={2} /></div>
-          <div className="brand-word">Aureon<span>Voice Studio</span></div>
+          <div className="brand-word">Aureon<span>Local sales assistant</span></div>
         </div>
 
-        <button className="new-recording" onClick={onNewRecording} type="button">
-          <Plus aria-hidden="true" size={16} />
-          <span>New recording</span>
-          <Mic aria-hidden="true" className="new-recording-mic" size={15} />
-        </button>
+        <nav aria-label="Main navigation" className="sidebar-navigation">
+          <button
+            aria-current={activeSection === "recordings" ? "page" : undefined}
+            className={`sidebar-nav-item${activeSection === "recordings" ? " active" : ""}`}
+            onClick={() => onNavigate("recordings")}
+            type="button"
+          >
+            <AudioLines size={15} />Voice studio
+          </button>
+          <button
+            aria-current={activeSection === "products" ? "page" : undefined}
+            className={`sidebar-nav-item${activeSection === "products" ? " active" : ""}`}
+            onClick={() => onNavigate("products")}
+            type="button"
+          >
+            <ShoppingBag size={15} />Products
+          </button>
+        </nav>
 
-        <div className="library-heading">
-          <span>Recordings</span>
-          <span className="recording-count">{recordings.length}</span>
-        </div>
-        <label className="search-field">
-          <Search aria-hidden="true" size={14} />
-          <input
-            aria-label="Search recordings"
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search"
-            value={query}
-          />
-          {query && (
-            <button aria-label="Clear search" onClick={() => setQuery("")} type="button">
-              <X size={13} />
+        {activeSection === "recordings" ? (
+          <>
+            <button className="new-recording" onClick={onNewRecording} type="button">
+              <Plus aria-hidden="true" size={16} />
+              <span>New recording</span>
+              <Mic aria-hidden="true" className="new-recording-mic" size={15} />
             </button>
-          )}
-        </label>
-
-        <div className="recording-list" role="list">
-          {filtered.map((recording) => (
-            <RecordingRow
-              key={recording.id}
-              onDelete={() => onDelete(recording.id)}
-              onRename={(name) => onRename(recording.id, name)}
-              onSelect={() => onSelect(recording.id)}
-              recording={recording}
-              selected={recording.id === selectedId}
-            />
-          ))}
-          {filtered.length === 0 && (
-            <p className="sidebar-empty">
-              {recordings.length === 0 ? "Your recordings will appear here." : "No matching recordings."}
-            </p>
-          )}
-        </div>
+            <div className="library-heading">
+              <span>Recordings</span>
+              <span className="recording-count">{recordings.length}</span>
+            </div>
+            <label className="search-field">
+              <Search aria-hidden="true" size={14} />
+              <input
+                aria-label="Search recordings"
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search"
+                value={query}
+              />
+              {query && (
+                <button aria-label="Clear search" onClick={() => setQuery("")} type="button">
+                  <X size={13} />
+                </button>
+              )}
+            </label>
+            <div className="recording-list" role="list">
+              {filtered.map((recording) => (
+                <RecordingRow
+                  key={recording.id}
+                  onDelete={() => onDelete(recording.id)}
+                  onRename={(name) => onRename(recording.id, name)}
+                  onSelect={() => onSelect(recording.id)}
+                  recording={recording}
+                  selected={recording.id === selectedId}
+                />
+              ))}
+              {filtered.length === 0 && (
+                <p className="sidebar-empty">
+                  {recordings.length === 0 ? "Your recordings will appear here." : "No matching recordings."}
+                </p>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="sidebar-section-note">
+            <Boxes size={14} />Catalog data is stored locally
+          </div>
+        )}
 
         <div className="sidebar-footer">
           <div className="local-badge"><span />On this device</div>
@@ -108,7 +139,7 @@ export function AppShell({
 
       <main className="main-panel">
         <header className="topbar">
-          <div className="topbar-crumb"><span>Library</span><span className="crumb-slash">/</span><strong>{selectedId ? "Recording" : "Studio"}</strong></div>
+          <div className="topbar-crumb"><span>Aureon</span><span className="crumb-slash">/</span><strong>{activeSection === "products" ? "Products" : selectedId ? "Recording" : "Voice studio"}</strong></div>
           <div className="topbar-actions">
             <span className="topbar-local"><span />Local processing</span>
             <button

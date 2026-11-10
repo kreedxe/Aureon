@@ -20,6 +20,7 @@ from app.schemas.ai import (
     TranslationResult,
 )
 from app.schemas.languages import LanguageCode
+from app.schemas.products import ProductDescriptionDraft, ProductDescriptionRequest
 
 if TYPE_CHECKING:
     from llama_cpp import Llama
@@ -39,6 +40,7 @@ class LocalAIEngine:
     def __init__(self) -> None:
         self._model: Llama | None = None
         self._model_lock = Lock()
+        self._inference_lock = Lock()
         self._status_lock = Lock()
         self._loading = False
         self._error: str | None = None
@@ -113,28 +115,30 @@ class LocalAIEngine:
         prompt = self._prompt(operation, transcript)
         report_progress(62, "Processing transcript locally…")
         try:
-            response = model.create_chat_completion(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are Aureon's private, local transcript assistant. "
-                            f"{language_instruction} "
-                            "Use only information stated in the transcript. Do not invent facts. "
-                            "Return one valid JSON object and no markdown. /no_think"
-                        ),
+            with self._inference_lock:
+                response = model.create_chat_completion(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are Aureon's private, local transcript assistant. "
+                                f"{language_instruction} "
+                                "Use only information stated in the transcript. "
+                                "Do not invent facts. "
+                                "Return one valid JSON object and no markdown. /no_think"
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    response_format={
+                        "type": "json_object",
+                        "schema": self._generation_schema_for(operation),
                     },
-                    {"role": "user", "content": prompt},
-                ],
-                response_format={
-                    "type": "json_object",
-                    "schema": self._generation_schema_for(operation),
-                },
-                temperature=0.2,
-                top_p=0.8,
-                max_tokens=self.max_output_tokens,
-                seed=42,
-            )
+                    temperature=0.2,
+                    top_p=0.8,
+                    max_tokens=self.max_output_tokens,
+                    seed=42,
+                )
             choice = response["choices"][0]
             if choice.get("finish_reason") == "length":
                 raise ValueError(
@@ -161,6 +165,71 @@ class LocalAIEngine:
             ) from error
         report_progress(98, "Validating the structured result…")
         return cast(AIResult, result)
+
+    def generate_product_description(
+        self,
+        product: ProductDescriptionRequest,
+        report_progress: ProgressCallback,
+    ) -> ProductDescriptionDraft:
+        model = self._get_model(report_progress)
+        facts = {
+            "name": product.name,
+            "price": f"{product.price} {product.currency}",
+            "category": product.category,
+            "brand": product.brand,
+            "specifications": product.specifications,
+        }
+        try:
+            report_progress(62, "Drafting a description from catalog details…")
+            with self._inference_lock:
+                response = model.create_chat_completion(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "Write a concise, factual product description using only the "
+                                "supplied catalog fields. Never infer benefits, materials, "
+                                "dimensions, "
+                                "compatibility, warranty, discounts, or technical specifications. "
+                                "Use the language apparent from the product name and category. "
+                                "Return one JSON object with a description string only. /no_think"
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                "Create a short draft description based only on these "
+                                "catalog facts:\n"
+                                f"{json.dumps(facts, ensure_ascii=False)}"
+                            ),
+                        },
+                    ],
+                    response_format={
+                        "type": "json_object",
+                        "schema": {
+                            "type": "object",
+                            "properties": {"description": {"type": "string"}},
+                            "required": ["description"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    temperature=0.1,
+                    top_p=0.8,
+                    max_tokens=300,
+                    seed=42,
+                )
+            choice = response["choices"][0]
+            if choice.get("finish_reason") == "length":
+                raise ValueError("The model reached its response limit. Try again.")
+            content = choice["message"]["content"]
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("The local model returned an empty description.")
+            result = ProductDescriptionDraft.model_validate(json.loads(content))
+        except Exception as error:
+            logger.exception("Local product description generation failed")
+            raise RuntimeError(f"Could not draft a product description: {error}") from error
+        report_progress(98, "Description draft is ready for review…")
+        return result
 
     @staticmethod
     def _schema_for(operation: AIAction) -> type[BaseModel]:

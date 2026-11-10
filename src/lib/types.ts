@@ -106,3 +106,44 @@ export interface TranscriptionJob {
   error: string | null;
   transcription: Transcription | null;
 }
+
+export type ProductAvailability = "available" | "out_of_stock" | "discontinued";
+export type ProductSort = "name" | "price" | "stock";
+
+export interface Product {
+  id: string;
+  name: string;
+  description: string | null;
+  price: string;
+  currency: string;
+  stock_quantity: number;
+  category: string;
+  brand: string | null;
+  specifications: Record<string, string | number | boolean | null>;
+  availability: ProductAvailability;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProductInput {
+  name: string;
+  description: string | null;
+  price: string;
+  currency: string;
+  stock_quantity: number;
+  category: string;
+  brand: string | null;
+  specifications: Record<string, string | number | boolean | null>;
+  availability: "available" | "discontinued";
+}
+
+export interface ProductList {
+  products: Product[];
+  categories: string[];
+  total: number;
+}
+
+export interface ProductDescriptionDraft {
+  description: string;
+  requires_review: true;
+}

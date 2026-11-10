@@ -4,13 +4,19 @@ import type {
   AIAction,
   AIJob,
   AIModelStatus,
+  Product,
+  ProductAvailability,
+  ProductDescriptionDraft,
+  ProductInput,
+  ProductList,
+  ProductSort,
   Recording,
   RecordingList,
   TranscriptionJob,
 } from "@/lib/types";
 
 interface RequestOptions {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   json?: unknown;
   form?: FormData;
   timeout?: number;
@@ -124,6 +130,47 @@ export function beginAIJob(
 
 export function getAIJob(jobId: string): Promise<AIJob> {
   return request(`/api/v1/ai/jobs/${jobId}`);
+}
+
+export async function listProducts(options: {
+  query?: string;
+  category?: string;
+  availability?: ProductAvailability | "";
+  sort?: ProductSort;
+  descending?: boolean;
+} = {}): Promise<ProductList> {
+  const search = new URLSearchParams();
+  if (options.query) search.set("query", options.query);
+  if (options.category) search.set("category", options.category);
+  if (options.availability) search.set("availability", options.availability);
+  if (options.sort) search.set("sort", options.sort);
+  if (options.descending) search.set("descending", "true");
+  return request(`/api/v1/products${search.size ? `?${search.toString()}` : ""}`);
+}
+
+export function createProduct(product: ProductInput): Promise<Product> {
+  return request("/api/v1/products", { method: "POST", json: product });
+}
+
+export function updateProduct(productId: string, product: ProductInput): Promise<Product> {
+  return request(`/api/v1/products/${productId}`, { method: "PUT", json: product });
+}
+
+export function deleteProduct(productId: string): Promise<void> {
+  return request(`/api/v1/products/${productId}`, { method: "DELETE" });
+}
+
+export function generateProductDescription(
+  input: Pick<
+    ProductInput,
+    "name" | "price" | "currency" | "category" | "brand" | "specifications"
+  >,
+): Promise<ProductDescriptionDraft> {
+  return request("/api/v1/products/description-draft", {
+    method: "POST",
+    json: input,
+    timeout: 600_000,
+  });
 }
 
 function extensionFor(mediaType: string): string {
