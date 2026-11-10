@@ -1,4 +1,5 @@
-# Aureon
+![Aureon banner](banner.jpg)
+
 
 Aureon is a local-first desktop shop assistant. Its Voice Studio supports continuous, on-device conversations; the product catalog is managed in a separate workspace. Product records, conversation transcripts, and generated conversation summaries persist in SQLite. Microphone audio remains in memory only.
 
