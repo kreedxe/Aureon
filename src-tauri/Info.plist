@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Aureon uses your microphone to record voice memos for local transcription.</string>
+  <string>Aureon uses your microphone for private, on-device voice conversations.</string>
 </dict>
 </plist>

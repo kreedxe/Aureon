@@ -5,6 +5,42 @@ export interface BackendConfig {
 
 export type LanguageChoice = "auto" | "uz" | "ru" | "en";
 export type AIAction = "summary" | "key_points" | "action_items" | "translation";
+export type ConversationState =
+  | "IDLE"
+  | "INITIALIZING"
+  | "GREETING"
+  | "LISTENING"
+  | "TRANSCRIBING"
+  | "THINKING"
+  | "SPEAKING"
+  | "INTERRUPTED"
+  | "ERROR"
+  | "ENDED";
+
+export interface LocalVoice {
+  id: string;
+  name: string;
+  language: string;
+}
+
+export interface ConversationReadiness {
+  ready: boolean;
+  vad_ready: boolean;
+  whisper_ready: boolean;
+  llm_ready: boolean;
+  voices: LocalVoice[];
+  install_status: "idle" | "running" | "completed" | "failed";
+  install_progress: number;
+  install_message: string;
+  install_error: string | null;
+}
+
+export interface ConversationTranscript {
+  role: "user" | "assistant";
+  text: string;
+  language: Exclude<LanguageChoice, "auto">;
+  languageProbability?: number;
+}
 export type TranscriptionStatus =
   | "not_transcribed"
   | "queued"

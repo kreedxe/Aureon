@@ -68,6 +68,7 @@ class RecordingSession:
         self._active_job_id: str | None = None
         self._ai_jobs: dict[str, AIJob] = {}
         self._active_ai_job_id: str | None = None
+        self._active_conversation_id: str | None = None
         self._lock = Lock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="aureon-transcribe")
         self._ai_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="aureon-ai")
@@ -137,6 +138,8 @@ class RecordingSession:
         language: TranscriptionLanguage,
     ) -> TranscriptionJob:
         with self._lock:
+            if self._active_conversation_id is not None:
+                raise RuntimeError("End the live conversation before transcribing a recording.")
             recording = self._recordings.get(recording_id)
             if recording is None:
                 raise KeyError(recording_id)
@@ -181,6 +184,8 @@ class RecordingSession:
         target_language: LanguageCode | None,
     ) -> AIJob:
         with self._lock:
+            if self._active_conversation_id is not None:
+                raise RuntimeError("End the live conversation before running a local AI task.")
             recording = self._recordings.get(recording_id)
             if recording is None:
                 raise KeyError(recording_id)
@@ -217,6 +222,35 @@ class RecordingSession:
     def get_ai_job(self, job_id: str) -> AIJob | None:
         with self._lock:
             return self._ai_jobs.get(job_id)
+
+    def begin_conversation(self, conversation_id: str) -> bool:
+        with self._lock:
+            if self._active_conversation_id is not None:
+                return False
+            if self._active_job_id is not None:
+                job = self._jobs.get(self._active_job_id)
+                if job is not None and job.status in {
+                    "queued",
+                    "loading_model",
+                    "transcribing",
+                }:
+                    return False
+            if self._active_ai_job_id is not None:
+                job = self._ai_jobs.get(self._active_ai_job_id)
+                if job is not None and job.status in {
+                    "queued",
+                    "downloading",
+                    "loading_model",
+                    "processing",
+                }:
+                    return False
+            self._active_conversation_id = conversation_id
+            return True
+
+    def end_conversation(self, conversation_id: str) -> None:
+        with self._lock:
+            if self._active_conversation_id == conversation_id:
+                self._active_conversation_id = None
 
     def _run_transcription(self, job_id: str, audio_path: Path, duration: float) -> None:
         with self._lock:

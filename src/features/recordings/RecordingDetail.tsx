@@ -4,7 +4,6 @@ import {
   Check,
   Clipboard,
   FileAudio,
-  Languages,
   LoaderCircle,
   RotateCcw,
   Sparkles,
@@ -71,7 +70,6 @@ export function RecordingDetail({
     <article className="recording-detail">
       <div className="detail-heading">
         <div>
-          <div className="eyebrow"><span className="eyebrow-line" />VOICE MEMO</div>
           <h1>{recording.name}</h1>
           <div className="detail-metadata">
             <span>{formatTimestamp(recording.created_at)}</span>
@@ -136,12 +134,7 @@ export function RecordingDetail({
           </div>
           <div className="transcript-body">{recording.transcription.text}</div>
         </section>
-      ) : (
-        <section className="transcript-empty">
-          <div className="transcript-empty-mark"><Languages size={17} /></div>
-          <div><h2>Words, kept in your language.</h2><p>Your recording will be transcribed privately on this device.</p></div>
-        </section>
-      )}
+      ) : null}
 
       <AITextPanel
         activeJob={activeAIJob}
@@ -164,7 +157,6 @@ export function RecordingDetail({
           <ArrowUpRight className="transcribe-arrow" size={14} />
         </Button>
       </div>
-      <p className="privacy-caption">Audio never leaves this device. Speech recognition is powered by Whisper running locally.</p>
     </article>
   );
 }

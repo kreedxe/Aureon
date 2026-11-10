@@ -4,10 +4,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes.conversations import router as conversations_router
 from app.api.routes.products import router as products_router
 from app.api.routes.recordings import router as recordings_router
 from app.core.security import SessionTokenMiddleware
 from app.schemas.health import HealthResponse
+from app.services.conversation import ConversationService
 from app.services.products import ProductRepository
 from app.services.recordings import RecordingSession
 
@@ -17,12 +19,18 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        application.state.conversation_service.close()
         application.state.recording_session.close()
 
 
 app = FastAPI(title="Aureon API", version="1.0.0", lifespan=lifespan)
 app.state.recording_session = RecordingSession()
 app.state.product_repository = ProductRepository()
+app.state.conversation_service = ConversationService(
+    app.state.recording_session.ai_engine,
+    app.state.recording_session.transcriber,
+    app.state.product_repository,
+)
 app.add_middleware(SessionTokenMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -32,6 +40,7 @@ app.add_middleware(
 )
 app.include_router(recordings_router, prefix="/api/v1")
 app.include_router(products_router, prefix="/api/v1")
+app.include_router(conversations_router, prefix="/api/v1")
 
 
 @app.get("/health", response_model=HealthResponse)

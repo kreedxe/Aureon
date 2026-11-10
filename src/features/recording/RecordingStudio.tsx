@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertCircle, Check, CircleStop, LoaderCircle, Mic, Pause, Play, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertCircle, CircleStop, LoaderCircle, Mic, Pause, Play, RotateCcw, Trash2 } from "lucide-react";
 import { LanguageSelect } from "@/components/ui/LanguageSelect";
 import { Waveform } from "@/components/ui/Waveform";
 import { formatDuration } from "@/lib/format";
@@ -45,13 +45,13 @@ export function RecordingStudio({
 
   return (
     <div className="recording-studio">
-      <div className="studio-topline"><span className="eyebrow"><span className="eyebrow-line" />NEW VOICE MEMO</span>
+      <div className="studio-topline">
         <LanguageSelect disabled={isActive || recorder.status === "saving"} onChange={onLanguageChange} value={language} />
       </div>
 
       <div className={`studio-hero${isActive ? " is-active" : ""}`}>
         <div className="studio-halo" />
-        <div className="studio-time">{formatDuration(recorder.duration)}<span>{recorder.status === "paused" ? "PAUSED" : recorder.status === "saving" ? "SAVING" : isActive ? "RECORDING" : "READY WHEN YOU ARE"}</span></div>
+        <div className="studio-time">{formatDuration(recorder.duration)}<span>{recorder.status === "paused" ? "PAUSED" : recorder.status === "saving" ? "SAVING" : isActive ? "RECORDING" : "READY"}</span></div>
         <div className="live-waveform"><Waveform analyser={recorder.analyser} /></div>
         <button
           aria-label={isActive ? "Recording in progress" : "Start recording"}
@@ -62,7 +62,6 @@ export function RecordingStudio({
         >
           {recorder.status === "saving" ? <LoaderCircle className="spin" size={25} /> : isActive ? <span className="microphone-live-dot" /> : <Mic size={25} strokeWidth={1.8} />}
         </button>
-        <p className="studio-prompt">{recorder.status === "paused" ? "Take your time. Your recording is safe." : isActive ? "Your thoughts, at your own pace." : recorder.status === "saving" ? "Saving to this session…" : "Tap the microphone when you’re ready."}</p>
       </div>
 
       <div className="record-controls">
@@ -92,8 +91,7 @@ export function RecordingStudio({
         </div>
       )}
 
-      <div className="studio-assurance"><ShieldCheck size={14} /><span>Saved only for this session</span><span className="assurance-divider">·</span><span>Local transcription</span></div>
-      <div className="model-info"><span className="model-indicator"><span /></span><span>Whisper small</span><span className="model-info-divider">·</span><span>Multilingual speech recognition</span><Check className="model-check" size={13} /></div>
+      <div className="studio-assurance"><span>Session-only</span><span className="assurance-divider">·</span><span>Local transcription</span></div>
     </div>
   );
 }

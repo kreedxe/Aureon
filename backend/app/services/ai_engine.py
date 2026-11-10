@@ -19,6 +19,7 @@ from app.schemas.ai import (
     SummaryResult,
     TranslationResult,
 )
+from app.schemas.conversations import ConversationReplyDraft, ProductSearchPlan
 from app.schemas.languages import LanguageCode
 from app.schemas.products import ProductDescriptionDraft, ProductDescriptionRequest
 
@@ -231,6 +232,151 @@ class LocalAIEngine:
         report_progress(98, "Description draft is ready for review…")
         return result
 
+    def prepare_model(self, report_progress: ProgressCallback) -> None:
+        self._get_model(report_progress, local_files_only=False)
+
+    def load_cached_model(self, report_progress: ProgressCallback) -> None:
+        self._get_model(report_progress, local_files_only=True)
+
+    def extract_product_query(
+        self,
+        transcript: str,
+        language: LanguageCode,
+        history: list[dict[str, str]],
+    ) -> str | None:
+        model = self._get_model(lambda _progress, _message: None, local_files_only=True)
+        language_name = self._language_name(language)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a private local product-catalog tool router. Decide whether the "
+                    "customer is asking about a catalog item, its price, availability, stock, "
+                    "or a product recommendation. If so, return a short search query using the "
+                    f"conversation context ({language_name}). Otherwise return null. Do not "
+                    "answer the customer or add product facts. /no_think"
+                ),
+            },
+            *history[-6:],
+            {"role": "user", "content": transcript},
+        ]
+        try:
+            output = self._json_completion(
+                model,
+                messages,
+                ProductSearchPlan.model_json_schema(),
+                max_tokens=120,
+            )
+            plan = ProductSearchPlan.model_validate(output)
+        except Exception as error:
+            logger.exception("Local conversation product-tool planning failed")
+            raise RuntimeError(f"Could not plan a local product search: {error}") from error
+        return plan.product_query or None
+
+    def generate_conversation_reply(
+        self,
+        transcript: str,
+        language: LanguageCode,
+        history: list[dict[str, str]],
+        *,
+        greeting: bool = False,
+        catalog_facts: str | None = None,
+    ) -> str:
+        model = self._get_model(lambda _progress, _message: None, local_files_only=True)
+        language_name = self._language_name(language)
+        if greeting:
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Aureon, a concise and warm in-store voice assistant. "
+                        f"Speak only in {language_name}. Welcome the customer and ask how you "
+                        "can help. Do not claim to have checked products or mention any "
+                        "catalog facts. Return a JSON object with a single 'reply' string. "
+                        "/no_think"
+                    ),
+                },
+                {"role": "user", "content": "Start the conversation with a brief greeting."},
+            ]
+        else:
+            catalog_instruction = (
+                " This is a retail shop: 'stock' means product inventory, not financial "
+                "securities. Never give financial or investment disclaimers for shopping "
+                "questions. The supplied local catalog results are authoritative. When they "
+                "contain a match, acknowledge the item briefly without repeating its price "
+                "or quantity; Python will append the exact facts. If they state no match, "
+                "say you cannot confirm it and ask for the exact product name."
+                if catalog_facts
+                else ""
+            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Aureon, a concise, helpful local shop voice assistant. "
+                        f"Reply only in {language_name}. Use the supplied conversation context, "
+                        "ask a short follow-up question when it helps, and never invent facts. "
+                        "Do not state prices, quantities, availability, or specifications; "
+                        "Python appends any verified catalog facts separately. If the customer "
+                        "asks about a product, briefly say you are checking it."
+                        f"{catalog_instruction} "
+                        "Return a JSON object with a single 'reply' string and no markdown. "
+                        "/no_think"
+                    ),
+                },
+                *(
+                    [{"role": "system", "content": f"Verified catalog results: {catalog_facts}"}]
+                    if catalog_facts
+                    else []
+                ),
+                *history[-8:],
+                {"role": "user", "content": transcript},
+            ]
+        try:
+            output = self._json_completion(
+                model,
+                messages,
+                ConversationReplyDraft.model_json_schema(),
+                max_tokens=180,
+            )
+            return ConversationReplyDraft.model_validate(output).reply
+        except Exception as error:
+            logger.exception("Local conversation response generation failed")
+            raise RuntimeError(
+                f"Could not generate a local conversation response: {error}"
+            ) from error
+
+    def _json_completion(
+        self,
+        model: Llama,
+        messages: list[dict[str, str]],
+        schema: dict[str, Any],
+        *,
+        max_tokens: int,
+    ) -> dict[str, Any]:
+        with self._inference_lock:
+            response = model.create_chat_completion(
+                messages=messages,
+                response_format={
+                    "type": "json_object",
+                    "schema": schema,
+                },
+                temperature=0.2,
+                top_p=0.8,
+                max_tokens=max_tokens,
+                seed=42,
+            )
+        choice = response["choices"][0]
+        if choice.get("finish_reason") == "length":
+            raise ValueError("The local model reached its response limit.")
+        content = choice["message"]["content"]
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("The local model returned an empty response.")
+        output = json.loads(content)
+        if not isinstance(output, dict):
+            raise ValueError("The local model response must be a JSON object.")
+        return output
+
     @staticmethod
     def _schema_for(operation: AIAction) -> type[BaseModel]:
         return {
@@ -278,7 +424,12 @@ class LocalAIEngine:
         }
         return f"{instructions[operation]}\n\nTranscript:\n{transcript}"
 
-    def _get_model(self, report_progress: ProgressCallback) -> Llama:
+    def _get_model(
+        self,
+        report_progress: ProgressCallback,
+        *,
+        local_files_only: bool = False,
+    ) -> Llama:
         if self._model is not None:
             return self._model
         with self._model_lock:
@@ -316,11 +467,17 @@ class LocalAIEngine:
 
                 with self._status_lock:
                     self._loading = True
-                report_progress(1, "Preparing local Qwen model…")
+                report_progress(
+                    1,
+                    "Loading cached local Qwen model…"
+                    if local_files_only
+                    else "Preparing local Qwen model…",
+                )
                 model_path = hf_hub_download(
                     repo_id=self.model_repository,
                     filename=self.model_filename,
                     cache_dir=str(self.cache_dir),
+                    local_files_only=local_files_only,
                     tqdm_class=DownloadProgress,
                 )
                 report_progress(46, "Loading Qwen model into memory…")
@@ -333,10 +490,16 @@ class LocalAIEngine:
                 report_progress(60, "Qwen is ready. Preparing the AI task…")
             except Exception as error:
                 logger.exception("Could not initialize local AI model")
-                message = (
-                    "Could not load the local Qwen model. Check your internet connection "
-                    f"for the first download and available memory. Details: {error}"
-                )
+                if local_files_only:
+                    message = (
+                        "The local Qwen model is not fully cached. Prepare the offline voice "
+                        f"models before starting a conversation. Details: {error}"
+                    )
+                else:
+                    message = (
+                        "Could not load the local Qwen model. Check your internet connection "
+                        f"for the first download and available memory. Details: {error}"
+                    )
                 with self._status_lock:
                     self._error = message
                 raise RuntimeError(message) from error

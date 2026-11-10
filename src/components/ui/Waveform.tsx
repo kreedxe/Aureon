@@ -32,6 +32,10 @@ export function Waveform({ analyser, progress = 0, variant = "live", className =
       const count = Math.max(28, Math.floor(width / 5));
       const gap = 2;
       const barWidth = Math.max(1.5, (width - count * gap) / count);
+      const styles = getComputedStyle(canvas);
+      const activeColor = styles.getPropertyValue("--waveform-active").trim();
+      const playedColor = styles.getPropertyValue("--waveform-played").trim();
+      const idleColor = styles.getPropertyValue("--waveform-idle").trim();
       if (samples && analyser) analyser.getByteFrequencyData(samples);
       for (let index = 0; index < count; index += 1) {
         const source = samples ? samples[Math.floor(index / count * samples.length)] / 255 : 0;
@@ -41,13 +45,13 @@ export function Waveform({ analyser, progress = 0, variant = "live", className =
         const x = index * (barWidth + gap);
         const y = (height - barHeight) / 2;
         const isPlayed = variant === "playback" && index / count <= progress;
-        context.fillStyle = variant === "live"
-          ? `rgba(218, 183, 142, ${0.38 + amplitude * 0.62})`
-          : isPlayed ? "rgba(224, 187, 143, 0.96)" : "rgba(148, 143, 137, 0.35)";
+        context.fillStyle = variant === "live" ? activeColor : isPlayed ? playedColor : idleColor;
+        context.globalAlpha = variant === "live" ? 0.38 + amplitude * 0.62 : 1;
         context.beginPath();
-        context.roundRect(x, y, barWidth, barHeight, barWidth);
+        context.rect(x, y, barWidth, barHeight);
         context.fill();
       }
+      context.globalAlpha = 1;
       frame += 1;
       if (variant === "live" && analyser) animation = requestAnimationFrame(draw);
     };

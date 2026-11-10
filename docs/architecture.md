@@ -2,8 +2,8 @@
 
 ## Responsibilities
 
-- **React and TypeScript** render the recording studio and product catalog and collect user interaction. `MediaRecorder` captures microphone audio in the desktop webview. Hooks coordinate UI state; `src/lib/api.ts` performs HTTP requests. The frontend does not contain transcription, application persistence, or database logic.
-- **FastAPI** validates requests, owns temporary recording files and metadata, coordinates transcription and AI jobs, serves product CRUD/search, and runs faster-whisper and llama.cpp locally. It is independent of React and Tauri and binds only to `127.0.0.1`.
+- **React and TypeScript** render the live conversation and product catalog. An `AudioWorklet` captures PCM frames; hooks coordinate UI state, and `src/lib/api.ts` handles HTTP calls. The frontend does not recognize speech, make product decisions, or access SQLite.
+- **FastAPI** validates requests, manages the authenticated conversation WebSocket, runs Silero VAD, faster-whisper, llama.cpp, and local speech synthesis, and serves product CRUD/search. It is independent of React and Tauri and binds only to `127.0.0.1`.
 - **SQLite** stores the shop product catalog persistently in the OS application-data directory. `ProductRepository` owns database connections, schema initialization, query filtering/sorting, and row mapping. SQLite access is only in Python.
 - **Tauri and Rust** create the native window, generate the per-launch token and local port, start the backend, wait for authenticated readiness, provide API configuration through a narrow Tauri command, and stop the backend on exit.
 
@@ -15,6 +15,19 @@
 4. React requests a transcription with Auto or an explicit language (`uz`, `ru`, or `en`). FastAPI queues one job and returns its identifier; job status is polled without blocking the UI.
 5. The Python service lazily initializes the multilingual faster-whisper `small` model with CPU int8 inference. First-use download byte counts are reported through the transcription job; model initialization and segment-based transcription have separate progress stages. It returns detected language and Whisper's language probability when available, and never uses cloud recognition or translates speech.
 6. FastAPI shuts down the worker and removes the session's temporary directory as the backend exits. The model cache is separate in the OS user cache directory and persists between sessions; first-use model download needs internet, while cached inference is local.
+
+## Continuous voice conversation flow
+
+1. The user explicitly prepares the local models before starting a conversation. Setup may download Whisper `small`, Qwen Q4_K_M, and the Silero ONNX file. The readiness API reports missing artifacts and installed operating-system speech voices. Preparation is separate from conversations; conversation startup and every inference path use cache-only model loading.
+2. The user starts a session and grants microphone permission. React obtains the backend address and per-launch token through the Tauri command, opens the loopback WebSocket, and sends a validated start frame. Python authenticates that first frame with constant-time token comparison.
+3. React's `AudioWorklet` resamples the mono microphone stream to 16 kHz PCM and sends binary frames. Echo cancellation, noise suppression, and automatic gain control are requested from the OS audio stack. Raw microphone frames are not saved.
+4. Python buffers 512-sample frames, maintains Silero's recurrent state, and treats sustained voice followed by 640 ms of silence as a completed utterance. Utterances are capped at 90 seconds to bound memory. The UI shows live microphone level; Whisper transcribes once at the end of each utterance, so there is not yet a partial-word transcript.
+5. `LocalWhisperTranscriber` uses the selected language or automatic detection and returns the original-language transcript and language probability. An unsupported detection or missing voice is reported explicitly.
+6. `LocalAIEngine` uses the reusable local Qwen instance to produce a Pydantic-validated product-search query when needed. Python executes that query through `ProductRepository`, passes the verified SQLite result into response generation, and appends the exact facts if the model omits them. The model never writes to the catalog.
+7. Qwen produces a concise response in the selected or detected language. Retail “stock” is treated as inventory, not financial securities. The operating system's offline speech engine creates a WAV response. macOS uses `say` and `afconvert`, Windows uses `System.Speech`, and Linux uses `espeak-ng`; a compatible installed voice is required for each spoken language.
+8. While the assistant audio plays, VAD continues to consume microphone input. On a new utterance, Python emits `INTERRUPTED`; React immediately stops its current audio source. The user does not press a button between turns. End closes the stream, releases the active conversation guard, and discards transcript/history from process memory.
+
+The state sent to React is `INITIALIZING`, `GREETING`, `LISTENING`, `TRANSCRIBING`, `THINKING`, `SPEAKING`, `INTERRUPTED`, `ERROR`, or `ENDED`. A guard in `RecordingSession` prevents concurrent transcription, AI jobs, and live conversations from contending for the shared local inference models.
 
 ## Local AI text flow
 
@@ -50,7 +63,7 @@ The API binds exclusively to IPv4 loopback; a random port and random token are c
 
 ## Session state and concurrency
 
-Recording files, names, timestamps, durations, AI results, and job status are process-local. Audio is not persisted across sessions. Product data is persistent in SQLite. The backend accepts at most one active transcription or AI job at a time to avoid overlapping inference against shared state; concurrent starts receive a conflict response. Completed or failed transcription and AI operations can be run again for a recording while it remains in the session. The Qwen model cache is intentionally persistent and separate from session audio and product data.
+Recording files, names, timestamps, durations, AI results, and job status are process-local. Audio is not persisted across sessions. Product data is persistent in SQLite. The backend accepts at most one active transcription, AI job, or live conversation at a time to avoid overlapping inference against shared state; concurrent starts receive a conflict response. Completed or failed transcription and AI operations can be run again for a recording while it remains in the session. Conversation history remains in memory only. The Whisper and Qwen model caches and the Silero model file persist separately from session audio and product data.
 
 The UI keeps uploaded audio Blobs in memory as object URLs for playback. Switching between recordings does not discard them. Deletion revokes the associated object URL and removes its backend temporary file. The backend enforces upload size and supported media-type constraints and reports invalid or corrupt audio errors.
 
@@ -58,4 +71,4 @@ The UI keeps uploaded audio Blobs in memory as object URLs for playback. Switchi
 
 Development starts the project environment through uv without assuming a Python installation path. The current release launcher explicitly errors until a target-specific PyInstaller executable is configured as a Tauri sidecar/resource. The macOS Apple Silicon `.app` and `.dmg` bundle build has been verified, but packaged release startup is not functional until that sidecar is supplied. Windows/Linux builds, packaged microphone behavior, and hardware-specific audio codecs require validation on their respective platforms before release compatibility can be claimed. Whisper and Qwen models are downloaded and cached on first use; neither is bundled.
 
-Live customer conversations, a real-time VAD/ASR/LLM/TTS pipeline, product retrieval tools in a conversation manager, durable conversation records/reports, and model setup/settings are not implemented yet. Future database migrations, additional repositories, conversation data, and business rules belong in the Python backend, never in the frontend or native window layer.
+Durable conversation records/reports are not implemented. macOS currently has no installed Uzbek speech voice, so Uzbek speech synthesis is unavailable unless a compatible local OS voice is installed. Physical microphone/speaker acceptance testing and Windows/Linux runtime behavior must be verified on their respective hosts; building the frontend alone does not certify the voice pipeline.

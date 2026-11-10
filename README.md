@@ -1,11 +1,11 @@
 # Aureon
 
-Aureon is a local-first desktop application foundation for a shop sales assistant. The existing Tauri 2 + Rust + React/TypeScript + FastAPI voice studio remains available, and a persistent local product catalog is now available for management and future product-grounded conversations. Product records are stored in SQLite; recordings remain temporary to the current session.
+Aureon is a local-first desktop shop assistant. Its Voice Studio supports continuous, on-device conversations; the product catalog is managed in a separate workspace. Product records are stored in SQLite. Microphone audio and conversation transcripts remain in memory for the active session only.
 
 ## Architecture
 
-- **React and TypeScript** provide the recording studio, session library, product management, playback, and transcription display. The browser `MediaRecorder` API captures microphone audio; the frontend uploads it to the API but does not transcribe or persist it.
-- **FastAPI and Python** own session audio files, validation, recording metadata, transcription and AI job state, the product API, and local SQLite product storage. Speech and text inference use faster-whisper and llama.cpp.
+- **React and TypeScript** provide the live conversation controls, session recording library, product management, playback, and transcript display. An `AudioWorklet` converts microphone input to PCM frames and streams them over an authenticated loopback WebSocket; it contains no speech recognition or catalog logic.
+- **FastAPI and Python** run Silero voice activity detection, faster-whisper transcription, the local Qwen conversation manager, authoritative SQLite product lookup, and local speech synthesis. Conversation audio is streamed in memory and is not saved.
 - **Rust and Tauri** start and supervise the backend, generate a per-launch session token and loopback port, wait for authenticated readiness, and stop the backend when the desktop app exits.
 
 See [docs/architecture.md](docs/architecture.md) for request flow and security boundaries.
@@ -14,7 +14,7 @@ See [docs/architecture.md](docs/architecture.md) for request flow and security b
 
 - Tauri 2, Rust, and Cargo.
 - React, strict TypeScript, Vite, Tailwind CSS, shadcn-style local components, Lucide React.
-- FastAPI, Pydantic, Uvicorn, HTTPX, faster-whisper, SQLite, and uv.
+- FastAPI, Pydantic, Uvicorn, HTTPX, faster-whisper, ONNX Runtime, NumPy, SQLite, and uv.
 - Optional local AI text tools use llama-cpp-python with Qwen3 1.7B Instruct GGUF Q4_K_M.
 - `pnpm` for frontend dependencies; `uv` and `backend/pyproject.toml` for Python dependencies.
 
@@ -25,7 +25,8 @@ src/                         React presentation, recording hooks, API client
   app/                       Application composition
   components/layout/         Desktop sidebar and library
   components/ui/             Reusable controls, language selector, waveform
-  features/recording/        Recording studio
+  features/conversation/     Live voice conversation
+  features/recording/        Session recording tools
   features/recordings/       Recording detail and empty state
   features/products/         Local product catalog and editor
   hooks/                     Recorder and library UI state
@@ -34,8 +35,8 @@ src/                         React presentation, recording hooks, API client
 src-tauri/                   Rust lifecycle manager and Tauri configuration
   capabilities/              Least-privilege webview permissions
   src/                       Application entry point, commands, backend manager
-backend/                     Independent Python API and transcription service
-  app/api/routes/            Product, recording, and transcription endpoints
+backend/                     Independent Python API and local conversation services
+  app/api/routes/            Conversation, product, recording, and transcription endpoints
   app/core/                  Configuration and authentication
   app/schemas/               Pydantic request/response models
   app/services/              SQLite catalog, session storage, and local inference
@@ -52,7 +53,9 @@ Tauri system prerequisites vary by platform; see the [official Tauri prerequisit
 
 - **macOS:** Xcode or Xcode Command Line Tools and CMake. Microphone permission is requested by the operating system.
 - **Windows 10/11:** Microsoft C++ Build Tools with Desktop development with C++, CMake, and Microsoft Edge WebView2 Runtime. Verify microphone privacy settings.
-- **Linux:** distribution-specific GTK/WebKitGTK 4.1, CMake, a C++ compiler, and build dependencies. Debian/Ubuntu packages documented by Tauri include `libwebkit2gtk-4.1-dev`, `build-essential`, `cmake`, `curl`, `wget`, `file`, `libxdo-dev`, `libssl-dev`, `libayatana-appindicator3-dev`, and `librsvg2-dev`. The host audio stack and microphone permissions must be configured.
+- **Linux:** distribution-specific GTK/WebKitGTK 4.1, CMake, a C++ compiler, and build dependencies. Debian/Ubuntu packages documented by Tauri include `libwebkit2gtk-4.1-dev`, `build-essential`, `cmake`, `curl`, `wget`, `file`, `libxdo-dev`, `libssl-dev`, `libayatana-appindicator3-dev`, and `librsvg2-dev`. Install `espeak-ng` and local `en`/`ru` voices for offline speech output; the host audio stack and microphone permissions must also be configured.
+- **Windows:** the built-in `System.Speech` voice engine is used; local English and Russian voices must be installed in Windows speech settings.
+- **macOS:** the built-in `say` and `afconvert` tools are used; local English and Russian voices must be installed in macOS settings.
 
 `uv sync` builds `llama-cpp-python` with CMake and the platform C++ toolchain when no compatible wheel is available.
 
@@ -77,9 +80,28 @@ Start the complete desktop application with one command:
 pnpm dev
 ```
 
-Vite provides HMR. Tauri starts the native window; Rust launches Uvicorn through uv in reload mode and supervises its lifecycle. The microphone is accessed by the webview using `getUserMedia` and `MediaRecorder`. If permission is denied or no input device is available, the studio displays an error.
+Vite provides HMR. Tauri starts the native window; Rust launches Uvicorn through uv in reload mode and supervises its lifecycle. The microphone is accessed using `getUserMedia` and an `AudioWorklet`. If permission is denied or no input device is available, the studio displays an error.
 
 The backend binds only to `127.0.0.1`. Rust chooses the port and creates a random token for the application session. The frontend obtains both through the narrow `get_backend_config` Tauri command; neither URL nor secret is hardcoded in the frontend.
+
+## Live local voice conversations
+
+The Voice Studio pipeline is:
+
+```text
+Microphone → PCM WebSocket → Silero VAD → faster-whisper → local conversation manager
+           → Qwen product-search plan → SQLite product lookup → Qwen response → OS local TTS → speaker
+```
+
+The worklet resamples microphone audio to mono 16 kHz PCM. Python buffers 512-sample frames for Silero VAD, ends a turn after approximately 640 ms of silence, and transcribes the completed utterance once with faster-whisper `small`. The selected language is passed to Whisper; Auto uses Whisper's detected language. The transcript and detected language are returned to the UI. Partial word-level transcription is not currently streamed.
+
+The local Qwen model maintains a bounded in-memory conversation history and creates a validated product-search plan when the customer asks about the catalog. Python executes that search against the current SQLite product data. Exact prices and stock counts are rendered from database records, not generated by the model. Qwen cannot change or save catalog information. If there is no match, the assistant explicitly says it cannot verify the item.
+
+Speech synthesis uses the operating system's installed offline voices: macOS `say`/`afconvert`, Windows `System.Speech`, or Linux `espeak-ng`. English and Russian voices are required to enable conversations. Uzbek transcription is supported, but spoken Uzbek requires an installed Uzbek system voice. When Auto detects a language without a local voice, Aureon reports that limitation rather than speaking with a different language voice.
+
+To prepare for offline use, open Voice Studio and choose **Download and prepare models** while internet access is available. This setup action downloads or verifies faster-whisper `small`, Qwen3 1.7B Q4_K_M, and the Silero ONNX model, and loads them locally. Model files are cached under the OS user cache (`Aureon/whisper`, `Aureon/qwen`, and `Aureon/voice`). Expect about 1.6 GB for model files, plus cache/runtime overhead; the Qwen model also needs RAM for its weights and context. After setup completes, conversation requests use local inference and do not call the network. A missing model prevents the session from starting; the conversation path uses cache-only model loading.
+
+During a session the frontend sends an unpredictable per-launch token in its WebSocket start frame. Rust supplies that token to the UI using Tauri IPC; the backend still binds only to loopback. Silero detection continues while the assistant speaks. On a speech interruption, Python changes the exposed state to `INTERRUPTED` and the UI stops the current audio source. Ending a conversation closes the microphone stream and releases the active-inference guard. The microphone PCM and turn history are not written to disk.
 
 ## Local product catalog
 
@@ -108,13 +130,13 @@ The persistent cache is managed by `platformdirs` and is separate from temporary
 ## Test and type check
 
 ```sh
-uv run --directory backend --project . pytest
-uv run --directory backend --project . ruff check app tests
+uv run --directory backend pytest
+uv run --project backend ruff check backend/app backend/tests
 pnpm typecheck
 pnpm build
 ```
 
-AI behavior tests use a fake local model so they validate the four structured result types for Uzbek, Russian, and English without downloading the model. To verify actual model inference, run the app with internet access for the initial model download and use each AI operation on transcripts in the supported languages.
+Conversation unit tests validate state/message handling and product-price/stock grounding against a temporary SQLite database. AI behavior tests use a fake local model so they validate the four structured result types for Uzbek, Russian, and English without downloading the model. Physical microphone, interruption, and speaker behavior must be verified on each host with its actual audio devices.
 
 ## Production builds
 
@@ -149,6 +171,6 @@ AI operations follow the same split: add or refine the Pydantic result schema in
 
 ## Next sales-assistant stages and packaging
 
-The persistent catalog is the first sales-assistant infrastructure stage. Live voice conversations, VAD and turn-taking, speech interruption, product-search tools in a conversation manager, local TTS, durable conversation history/reports, model setup/settings, and reviewed AI-generated product descriptions are not implemented yet. Do not treat the current recording/transcription workflow as a real-time sales conversation or claim those features are available.
+Conversation transcripts and history are currently session-only; durable conversation records and reports have not been implemented. An Uzbek offline voice is not installed on this macOS host. Physical audio-device behavior and Windows/Linux runtime builds require testing on those platforms before compatibility can be certified.
 
 For distribution, package the backend and model-loading dependencies as a target-specific PyInstaller executable, configure it as a Tauri sidecar/resource, and validate startup, readiness, error reporting, cleanup, permissions, and shutdown on each supported OS. Models are downloaded on first use and cached separately; they are not currently bundled into the application installer.

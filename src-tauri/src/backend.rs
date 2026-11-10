@@ -65,7 +65,9 @@ impl BackendState {
                     match child.try_wait() {
                         Ok(Some(_)) => {
                             if let Err(error) = child.kill() {
-                                if error.kind() != std::io::ErrorKind::NotFound {
+                                if error.kind() != std::io::ErrorKind::NotFound
+                                    && error.raw_os_error() != Some(libc::ESRCH)
+                                {
                                     eprintln!("Could not stop remaining Python backend processes: {error}");
                                 }
                             }
@@ -151,6 +153,7 @@ fn start_backend() -> Result<(BackendRuntime, Box<dyn ChildWrapper>), String> {
         }
     };
     let deadline = Instant::now() + Duration::from_secs(30);
+    let mut last_readiness_error = "No response from the Python backend.".to_string();
 
     while Instant::now() < deadline {
         match child.try_wait() {
@@ -181,16 +184,17 @@ fn start_backend() -> Result<(BackendRuntime, Box<dyn ChildWrapper>), String> {
                 let _ = child.wait();
                 return Err(format!("Python backend readiness check returned HTTP {status}. Check its session token and startup logs."));
             }
-            Err(error) if !error.is_connect() => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("Python backend readiness check failed: {error}"));
+            Err(error) => {
+                last_readiness_error = error.to_string();
+                thread::sleep(Duration::from_millis(150));
             }
-            _ => thread::sleep(Duration::from_millis(150)),
         }
     }
 
     let _ = child.kill();
     let _ = child.wait();
-    Err("Python backend did not become ready within 30 seconds. Check the backend startup logs and run `uv sync` in backend/.".to_string())
+    Err(format!(
+        "Python backend did not become ready within 30 seconds. Last readiness error: \
+         {last_readiness_error}. Check the backend startup logs and run `uv sync` in backend/."
+    ))
 }

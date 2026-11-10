@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 import type { MouseEvent } from "react";
 import {
   AudioLines,
-  Boxes,
   Check,
   Clock3,
   Mic,
@@ -27,7 +26,7 @@ interface AppShellProps extends PropsWithChildren {
   isLight: boolean;
   onSelect: (id: string) => void;
   onNavigate: (section: "recordings" | "products") => void;
-  onNewRecording: () => void;
+  onNewConversation: () => void;
   onRename: (id: string, name: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onToggleTheme: () => void;
@@ -43,7 +42,7 @@ export function AppShell({
   isLight,
   onSelect,
   onNavigate,
-  onNewRecording,
+  onNewConversation,
   onRename,
   onDelete,
   onToggleTheme,
@@ -60,7 +59,7 @@ export function AppShell({
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><AudioLines aria-hidden="true" size={18} strokeWidth={2} /></div>
-          <div className="brand-word">Aureon<span>Local sales assistant</span></div>
+          <div className="brand-word">Aureon</div>
         </div>
 
         <nav aria-label="Main navigation" className="sidebar-navigation">
@@ -84,9 +83,9 @@ export function AppShell({
 
         {activeSection === "recordings" ? (
           <>
-            <button className="new-recording" onClick={onNewRecording} type="button">
+            <button className="new-recording" onClick={onNewConversation} type="button">
               <Plus aria-hidden="true" size={16} />
-              <span>New recording</span>
+              <span>New conversation</span>
               <Mic aria-hidden="true" className="new-recording-mic" size={15} />
             </button>
             <div className="library-heading">
@@ -118,22 +117,15 @@ export function AppShell({
                   selected={recording.id === selectedId}
                 />
               ))}
-              {filtered.length === 0 && (
-                <p className="sidebar-empty">
-                  {recordings.length === 0 ? "Your recordings will appear here." : "No matching recordings."}
-                </p>
+              {filtered.length === 0 && recordings.length > 0 && (
+                <p className="sidebar-empty">No matching recordings.</p>
               )}
             </div>
           </>
-        ) : (
-          <div className="sidebar-section-note">
-            <Boxes size={14} />Catalog data is stored locally
-          </div>
-        )}
+        ) : null}
 
         <div className="sidebar-footer">
           <div className="local-badge"><span />On this device</div>
-          <span className="sidebar-footer-note">Private by design</span>
         </div>
       </aside>
 
@@ -141,7 +133,6 @@ export function AppShell({
         <header className="topbar">
           <div className="topbar-crumb"><span>Aureon</span><span className="crumb-slash">/</span><strong>{activeSection === "products" ? "Products" : selectedId ? "Recording" : "Voice studio"}</strong></div>
           <div className="topbar-actions">
-            <span className="topbar-local"><span />Local processing</span>
             <button
               aria-label={isLight ? "Switch to dark appearance" : "Switch to light appearance"}
               className="icon-button theme-toggle"

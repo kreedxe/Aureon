@@ -71,7 +71,6 @@ export function AITextPanel({ recording, modelStatus, activeJob, onRun }: AIText
       <div className="ai-panel-heading">
         <div>
           <div className="ai-panel-title"><Sparkles size={15} /><h2>AI text tools</h2></div>
-          <p>Private processing on this device</p>
         </div>
         <span className={`ai-model-badge${modelStatus?.downloaded ? " ready" : ""}`}>
           <span />{modelStatus?.loaded ? "Model ready" : modelStatus?.downloaded ? "Model downloaded" : "Optional model"}
@@ -97,7 +96,7 @@ export function AITextPanel({ recording, modelStatus, activeJob, onRun }: AIText
       {!recording.transcription ? (
         <div className="ai-empty-state">
           <Sparkles size={16} />
-          <p>Transcribe this recording first to use local AI tools.</p>
+          <p>Transcribe this recording first.</p>
         </div>
       ) : (
         <>
@@ -174,12 +173,6 @@ export function AITextPanel({ recording, modelStatus, activeJob, onRun }: AIText
               <AIResultView result={result} />
               <p className="ai-accuracy-note">AI-generated text can be inaccurate. Review it before relying on it.</p>
             </div>
-          ) : !running ? (
-            <p className="ai-result-placeholder">
-              {selectedTab === "translation"
-                ? "Translate the transcript while keeping the original text unchanged."
-                : "Generate a separate result from the original transcript."}
-            </p>
           ) : null}
 
           <div className="ai-actions">

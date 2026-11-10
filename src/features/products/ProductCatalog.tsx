@@ -1,14 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
   AlertCircle,
   Archive,
   ArrowDownWideNarrow,
   ArrowUpWideNarrow,
-  Box,
   Check,
   ChevronDown,
-  CirclePlus,
   Edit3,
   LoaderCircle,
   Package,
@@ -100,11 +98,6 @@ export function ProductCatalog() {
     };
   }, []);
 
-  const subtitle = useMemo(
-    () => `${products.length} ${products.length === 1 ? "product" : "products"} in this view`,
-    [products.length],
-  );
-
   async function saveProduct(input: ProductInput) {
     setBusy(true);
     try {
@@ -136,9 +129,7 @@ export function ProductCatalog() {
     <section className="product-workspace">
       <header className="product-page-header">
         <div>
-          <div className="eyebrow"><span className="eyebrow-line" />SHOP CATALOG</div>
           <h1>Products</h1>
-          <p>{subtitle} · Stored privately on this device</p>
         </div>
         <button className="product-primary-button" onClick={() => setEditor({ product: null })} type="button">
           <Plus size={15} />Add product
@@ -146,12 +137,9 @@ export function ProductCatalog() {
       </header>
 
       <section aria-label="Catalog overview" className="catalog-overview">
-        <div className="catalog-overview-icon"><Package size={17} /></div>
         <div><strong>{products.length}</strong><span>Catalog products</span></div>
         <div className="catalog-overview-divider" />
-        <div className="catalog-overview-icon subtle"><Box size={16} /></div>
         <div><strong>{categories.length}</strong><span>Categories</span></div>
-        <div className="catalog-private"><span />Local SQLite catalog</div>
       </section>
 
       {error && (
@@ -231,7 +219,10 @@ export function ProductCatalog() {
                 <td>
                   <button className="product-name-cell" onClick={() => setEditor({ product })} type="button">
                     <span className="product-row-icon"><Package size={15} /></span>
-                    <span><strong>{product.name}</strong><small>{product.brand || product.description || "No description"}</small></span>
+                    <span>
+                      <strong>{product.name}</strong>
+                      {(product.brand || product.description) && <small>{product.brand || product.description}</small>}
+                    </span>
                   </button>
                 </td>
                 <td><span className="product-category">{product.category}</span></td>
@@ -251,11 +242,12 @@ export function ProductCatalog() {
         {!isLoading && products.length === 0 && (
           <div className="catalog-empty">
             <div className="catalog-empty-icon">{query || category || availability ? <Search size={19} /> : <Archive size={19} />}</div>
-            <h2>{query || category || availability ? "No matching products" : "Your catalog is ready"}</h2>
-            <p>{query || category || availability ? "Try changing the search or filters." : "Add accurate product details so Aureon can answer customer questions with confidence."}</p>
-            {!query && !category && !availability && (
-              <button className="product-secondary-button" onClick={() => setEditor({ product: null })} type="button"><CirclePlus size={14} />Add your first product</button>
-            )}
+            {query || category || availability ? (
+              <>
+                <h2>No matching products</h2>
+                <p>Try changing the search or filters.</p>
+              </>
+            ) : <h2>No products</h2>}
           </div>
         )}
         {isLoading && <div className="catalog-loading"><span className="mini-spinner" />Loading local catalog…</div>}
@@ -380,8 +372,7 @@ function ProductEditor({
     <div className="product-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section aria-labelledby="product-editor-title" aria-modal="true" className="product-dialog" role="dialog">
         <header className="product-dialog-header">
-          <div><span className="eyebrow"><span className="eyebrow-line" />CATALOG ITEM</span>
-            <h2 id="product-editor-title">{product ? "Edit product" : "Add product"}</h2></div>
+          <div><h2 id="product-editor-title">{product ? "Edit product" : "Add product"}</h2></div>
           <button aria-label="Close product editor" className="product-dialog-close" onClick={onClose} type="button"><X size={16} /></button>
         </header>
         <form onSubmit={(event) => void submit(event)}>

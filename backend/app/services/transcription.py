@@ -6,6 +6,7 @@ from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 from platformdirs import user_cache_dir
 
 from app.schemas.recordings import TranscriptionLanguage
@@ -31,6 +32,28 @@ class LocalWhisperTranscriber:
     def __init__(self) -> None:
         self._model = None
         self._model_lock = Lock()
+        self._inference_lock = Lock()
+
+    @property
+    def cached(self) -> bool:
+        from huggingface_hub import try_to_load_from_cache
+
+        model_path = try_to_load_from_cache(
+            self.model_repository,
+            "model.bin",
+            cache_dir=str(self.cache_dir),
+        )
+        return isinstance(model_path, str) and Path(model_path).is_file()
+
+    @property
+    def cache_dir(self) -> Path:
+        return Path(user_cache_dir("Aureon", "Aureon")) / "whisper"
+
+    def prepare_model(self, report_progress: ProgressCallback) -> None:
+        self._get_model(report_progress, local_files_only=False)
+
+    def load_cached_model(self, report_progress: ProgressCallback) -> None:
+        self._get_model(report_progress, local_files_only=True)
 
     def transcribe(
         self,
@@ -42,22 +65,23 @@ class LocalWhisperTranscriber:
         model = self._get_model(report_progress)
         report_progress(40, "Transcribing audio locally…")
         try:
-            segments, info = model.transcribe(
-                str(audio_path),
-                language=language,
-                task="transcribe",
-                beam_size=5,
-                vad_filter=True,
-            )
-            text_parts: list[str] = []
-            last_progress = 40.0
-            for segment in segments:
-                text_parts.append(segment.text)
-                if duration > 0:
-                    progress = min(96.0, 40.0 + (segment.end / duration) * 56.0)
-                    if progress - last_progress >= 1:
-                        report_progress(progress, "Transcribing speech locally…")
-                        last_progress = progress
+            with self._inference_lock:
+                segments, info = model.transcribe(
+                    str(audio_path),
+                    language=language,
+                    task="transcribe",
+                    beam_size=5,
+                    vad_filter=True,
+                )
+                text_parts: list[str] = []
+                last_progress = 40.0
+                for segment in segments:
+                    text_parts.append(segment.text)
+                    if duration > 0:
+                        progress = min(96.0, 40.0 + (segment.end / duration) * 56.0)
+                        if progress - last_progress >= 1:
+                            report_progress(progress, "Transcribing speech locally…")
+                            last_progress = progress
         except Exception as error:
             raise RuntimeError(
                 "The audio could not be decoded or transcribed. "
@@ -75,7 +99,49 @@ class LocalWhisperTranscriber:
             model=self.model_name,
         )
 
-    def _get_model(self, report_progress: ProgressCallback) -> WhisperModel:
+    def transcribe_samples(
+        self,
+        audio: np.ndarray,
+        language: TranscriptionLanguage,
+        report_progress: ProgressCallback,
+    ) -> TranscriptionResult:
+        model = self._get_model(report_progress, local_files_only=True)
+        if audio.ndim != 1 or audio.size < 4_800:
+            raise RuntimeError("The utterance is too short to transcribe reliably.")
+        if not np.isfinite(audio).all():
+            raise RuntimeError("The microphone provided invalid audio samples.")
+        report_progress(5, "Transcribing the utterance with local Whisper…")
+        try:
+            with self._inference_lock:
+                segments, info = model.transcribe(
+                    audio.astype(np.float32, copy=False),
+                    language=language,
+                    task="transcribe",
+                    beam_size=1,
+                    condition_on_previous_text=False,
+                    vad_filter=False,
+                )
+                text = "".join(segment.text for segment in segments).strip()
+        except Exception as error:
+            raise RuntimeError(
+                "Local Whisper could not decode this microphone utterance. "
+                f"Details: {type(error).__name__}: {error}"
+            ) from error
+        if not text:
+            raise RuntimeError("Whisper did not detect speech in that utterance.")
+        return TranscriptionResult(
+            text=text,
+            language=info.language,
+            language_probability=float(info.language_probability),
+            model=self.model_name,
+        )
+
+    def _get_model(
+        self,
+        report_progress: ProgressCallback,
+        *,
+        local_files_only: bool = False,
+    ) -> WhisperModel:
         if self._model is not None:
             return self._model
         with self._model_lock:
@@ -83,16 +149,19 @@ class LocalWhisperTranscriber:
                 return self._model
             report_progress(
                 1,
-                "Preparing the local Whisper model. First use may download the model "
-                "and requires internet.",
+                (
+                    "Loading the cached local Whisper model…"
+                    if local_files_only
+                    else "Preparing the local Whisper model. First use may download the model "
+                    "and requires internet."
+                ),
             )
             try:
                 from faster_whisper import WhisperModel
                 from huggingface_hub import snapshot_download
                 from huggingface_hub.utils import tqdm as HuggingFaceTqdm
 
-                cache_dir = Path(user_cache_dir("Aureon", "Aureon")) / "whisper"
-                cache_dir.mkdir(parents=True, exist_ok=True)
+                self.cache_dir.mkdir(parents=True, exist_ok=True)
                 last_progress = 5.0
 
                 class DownloadProgress(HuggingFaceTqdm):
@@ -126,7 +195,8 @@ class LocalWhisperTranscriber:
                         "tokenizer.json",
                         "vocabulary.*",
                     ],
-                    cache_dir=str(cache_dir),
+                    cache_dir=str(self.cache_dir),
+                    local_files_only=local_files_only,
                     tqdm_class=DownloadProgress,
                 )
                 if not isinstance(model_path, str):
@@ -140,9 +210,16 @@ class LocalWhisperTranscriber:
                 )
                 report_progress(38, "Whisper model ready. Preparing the recording…")
             except Exception as error:
-                raise RuntimeError(
-                    "Could not prepare the local Whisper model. "
-                    "The first use requires internet to download it; "
-                    f"after it is cached, transcription runs offline. Details: {error}"
-                ) from error
+                if local_files_only:
+                    message = (
+                        "The local Whisper model is not fully cached. Prepare the offline "
+                        f"voice models before starting a conversation. Details: {error}"
+                    )
+                else:
+                    message = (
+                        "Could not prepare the local Whisper model. The first download requires "
+                        "internet; after it is cached, transcription runs offline. "
+                        f"Details: {error}"
+                    )
+                raise RuntimeError(message) from error
         return self._model

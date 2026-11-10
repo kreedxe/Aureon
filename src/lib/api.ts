@@ -4,6 +4,7 @@ import type {
   AIAction,
   AIJob,
   AIModelStatus,
+  ConversationReadiness,
   Product,
   ProductAvailability,
   ProductDescriptionDraft,
@@ -130,6 +131,14 @@ export function beginAIJob(
 
 export function getAIJob(jobId: string): Promise<AIJob> {
   return request(`/api/v1/ai/jobs/${jobId}`);
+}
+
+export function getConversationReadiness(): Promise<ConversationReadiness> {
+  return request("/api/v1/conversations/status");
+}
+
+export function installConversationModels(): Promise<ConversationReadiness> {
+  return request("/api/v1/conversations/install", { method: "POST" });
 }
 
 export async function listProducts(options: {
