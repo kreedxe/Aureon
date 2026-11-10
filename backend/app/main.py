@@ -10,6 +10,7 @@ from app.api.routes.recordings import router as recordings_router
 from app.core.security import SessionTokenMiddleware
 from app.schemas.health import HealthResponse
 from app.services.conversation import ConversationService
+from app.services.conversation_repository import ConversationRepository
 from app.services.products import ProductRepository
 from app.services.recordings import RecordingSession
 
@@ -26,10 +27,15 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Aureon API", version="1.0.0", lifespan=lifespan)
 app.state.recording_session = RecordingSession()
 app.state.product_repository = ProductRepository()
+app.state.conversation_repository = ConversationRepository(
+    app.state.product_repository.database_path
+)
+app.state.conversation_repository.recover_interrupted()
 app.state.conversation_service = ConversationService(
     app.state.recording_session.ai_engine,
     app.state.recording_session.transcriber,
     app.state.product_repository,
+    app.state.conversation_repository,
 )
 app.add_middleware(SessionTokenMiddleware)
 app.add_middleware(

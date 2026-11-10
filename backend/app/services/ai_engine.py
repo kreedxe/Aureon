@@ -19,7 +19,11 @@ from app.schemas.ai import (
     SummaryResult,
     TranslationResult,
 )
-from app.schemas.conversations import ConversationReplyDraft, ProductSearchPlan
+from app.schemas.conversations import (
+    ConversationReplyDraft,
+    ConversationSummaryDraft,
+    ProductSearchPlan,
+)
 from app.schemas.languages import LanguageCode
 from app.schemas.products import ProductDescriptionDraft, ProductDescriptionRequest
 
@@ -243,18 +247,20 @@ class LocalAIEngine:
         transcript: str,
         language: LanguageCode,
         history: list[dict[str, str]],
-    ) -> str | None:
+    ) -> ProductSearchPlan:
         model = self._get_model(lambda _progress, _message: None, local_files_only=True)
         language_name = self._language_name(language)
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "You are a private local product-catalog tool router. Decide whether the "
-                    "customer is asking about a catalog item, its price, availability, stock, "
-                    "or a product recommendation. If so, return a short search query using the "
-                    f"conversation context ({language_name}). Otherwise return null. Do not "
-                    "answer the customer or add product facts. /no_think"
+                    "You are a local product-catalog tool router. Set catalog_requested=true "
+                    "only when the customer is actually asking about a shop product, price, "
+                    "availability, stock, or a recommendation. Normal greetings, small talk, "
+                    "and unrelated questions must have catalog_requested=false and "
+                    "product_query=null. For a real catalog request, provide a short search "
+                    f"query using context ({language_name}). Never answer or invent product facts. "
+                    "Return the required JSON only. /no_think"
                 ),
             },
             *history[-6:],
@@ -267,11 +273,42 @@ class LocalAIEngine:
                 ProductSearchPlan.model_json_schema(),
                 max_tokens=120,
             )
-            plan = ProductSearchPlan.model_validate(output)
+            return ProductSearchPlan.model_validate(output)
         except Exception as error:
             logger.exception("Local conversation product-tool planning failed")
             raise RuntimeError(f"Could not plan a local product search: {error}") from error
-        return plan.product_query or None
+
+    def generate_conversation_summary(
+        self,
+        messages: list[dict[str, str]],
+    ) -> ConversationSummaryDraft:
+        model = self._get_model(lambda _progress, _message: None, local_files_only=True)
+        prompt = (
+            "Create a structured summary of this shop conversation using only details "
+            "explicitly stated in the transcript. Do not infer identity, age, location, budget, "
+            "preferences, needs, or purchase outcome. Use 'Not provided' for missing scalar "
+            "customer details and ['Not provided'] for empty detail lists. Use 'unknown' for "
+            "purchase_intent if intent was not expressed. Choose 'purchased' only if a purchase "
+            "was explicitly completed; expressed interest or commitment is not a purchase. "
+            "Use 'requested_more_information' only when more information was explicitly "
+            "requested, 'undecided' only when that is expressed, and otherwise 'no_purchase'. "
+            "The title must reflect the opening customer discussion without adding facts. "
+            "Return the required JSON only. /no_think"
+        )
+        try:
+            output = self._json_completion(
+                model,
+                [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": json.dumps(messages, ensure_ascii=False)},
+                ],
+                ConversationSummaryDraft.model_json_schema(),
+                max_tokens=700,
+            )
+            return ConversationSummaryDraft.model_validate(output)
+        except Exception as error:
+            logger.exception("Local conversation summary generation failed")
+            raise RuntimeError(f"Could not summarize the local conversation: {error}") from error
 
     def generate_conversation_reply(
         self,
@@ -316,9 +353,12 @@ class LocalAIEngine:
                         "You are Aureon, a concise, helpful local shop voice assistant. "
                         f"Reply only in {language_name}. Use the supplied conversation context, "
                         "ask a short follow-up question when it helps, and never invent facts. "
+                        "A greeting has already been given at the start of this conversation; "
+                        "if the customer greets you, acknowledge briefly without welcoming them "
+                        "again or restarting the conversation. "
                         "Do not state prices, quantities, availability, or specifications; "
-                        "Python appends any verified catalog facts separately. If the customer "
-                        "asks about a product, briefly say you are checking it."
+                        "Python appends any verified catalog facts separately. Do not claim a "
+                        "catalog lookup occurred unless verified catalog results are supplied."
                         f"{catalog_instruction} "
                         "Return a JSON object with a single 'reply' string and no markdown. "
                         "/no_think"

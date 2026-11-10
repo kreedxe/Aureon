@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import {
   AlertCircle,
   AudioLines,
@@ -11,10 +12,16 @@ import {
   ShieldCheck,
   WifiOff,
 } from "lucide-react";
-import { getConversationReadiness, installConversationModels } from "@/lib/api";
+import {
+  createConversation,
+  getConversation,
+  getConversationReadiness,
+  installConversationModels,
+} from "@/lib/api";
 import { getBackendConfig } from "@/lib/tauri";
 import type {
   ConversationReadiness,
+  ConversationSummary,
   ConversationState,
   ConversationTranscript,
   LanguageChoice,
@@ -50,7 +57,17 @@ const stateLabels: Record<ConversationState, string> = {
   ENDED: "Conversation ended",
 };
 
-export function ConversationWorkspace() {
+interface ConversationWorkspaceProps {
+  conversationId: string | null;
+  onConversationCreated: (id: string) => void;
+  onConversationUpdated: () => void;
+}
+
+export function ConversationWorkspace({
+  conversationId,
+  onConversationCreated,
+  onConversationUpdated,
+}: ConversationWorkspaceProps) {
   const [readiness, setReadiness] = useState<ConversationReadiness | null>(null);
   const [language, setLanguage] = useState<LanguageChoice>("auto");
   const [state, setState] = useState<ConversationState>("IDLE");
@@ -59,6 +76,13 @@ export function ConversationWorkspace() {
   const [error, setError] = useState<string | null>(null);
   const [level, setLevel] = useState(0);
   const [isInstalling, setIsInstalling] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
+  const [isEnding, setIsEnding] = useState(false);
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(conversationId);
+  const [conversationTitle, setConversationTitle] = useState("New conversation");
+  const [summary, setSummary] = useState<ConversationSummary | null>(null);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [isLoadingConversation, setIsLoadingConversation] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -66,6 +90,10 @@ export function ConversationWorkspace() {
   const captureRef = useRef<AudioWorkletNode | null>(null);
   const playbackRef = useRef<AudioBufferSourceNode | null>(null);
   const stateRef = useRef<ConversationState>("IDLE");
+  const currentConversationIdRef = useRef<string | null>(conversationId);
+  const loadedConversationIdRef = useRef<string | null | undefined>(undefined);
+  const startingRef = useRef(false);
+  const endingRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const lastMeterUpdateRef = useRef(0);
 
@@ -94,6 +122,56 @@ export function ConversationWorkspace() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
+
+  useEffect(() => {
+    if (loadedConversationIdRef.current === conversationId) return;
+    loadedConversationIdRef.current = conversationId;
+    currentConversationIdRef.current = conversationId;
+    setCurrentConversationId(conversationId);
+    setSummary(null);
+    setSummaryError(null);
+    setMessages([]);
+    if (!conversationId) {
+      setConversationTitle("New conversation");
+      setStateMessage("");
+      setIsLoadingConversation(false);
+      updateState("IDLE");
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoadingConversation(true);
+    void getConversation(conversationId).then(
+      (detail) => {
+        if (cancelled || currentConversationIdRef.current !== conversationId) return;
+        setConversationTitle(detail.title);
+        setLanguage(detail.language);
+        setSummary(detail.summary);
+        setSummaryError(detail.summary_error);
+        setMessages(
+          detail.messages.map((message) => ({
+            role: message.role,
+            text: message.text,
+            language: message.language,
+            languageProbability: message.language_probability ?? undefined,
+            timestamp: message.timestamp,
+          })),
+        );
+        setIsLoadingConversation(false);
+        updateState("ENDED", "Conversation ended.");
+      },
+      (reason: unknown) => {
+        if (cancelled) return;
+        setIsLoadingConversation(false);
+        setError(
+          reason instanceof Error ? reason.message : "Could not load the saved conversation.",
+        );
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId, updateState]);
 
   const stopPlayback = useCallback(() => {
     const current = playbackRef.current;
@@ -124,15 +202,14 @@ export function ConversationWorkspace() {
 
   const stopConversation = useCallback(() => {
     const socket = socketRef.current;
+    endingRef.current = true;
     if (socket?.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: "end" }));
     }
-    socketRef.current = null;
+    setIsEnding(true);
     stopPlayback();
     stopAudioCapture();
-    if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "Conversation ended");
-    updateState("ENDED", "The microphone is off. This conversation has ended.");
-  }, [stopAudioCapture, stopPlayback, updateState]);
+  }, [stopAudioCapture, stopPlayback]);
 
   useEffect(
     () => () => {
@@ -147,11 +224,19 @@ export function ConversationWorkspace() {
     (event: MessageEvent<ArrayBuffer | string>) => {
       if (typeof event.data !== "string") {
         const context = contextRef.current;
-        if (!context || stateRef.current === "INTERRUPTED" || stateRef.current === "ENDED") return;
+        if (
+          !context ||
+          endingRef.current ||
+          stateRef.current === "INTERRUPTED" ||
+          stateRef.current === "ENDED"
+        ) {
+          return;
+        }
         void context.decodeAudioData(event.data.slice(0)).then(
           (audio) => {
             if (
               contextRef.current !== context ||
+              endingRef.current ||
               stateRef.current === "INTERRUPTED" ||
               stateRef.current === "ENDED"
             ) {
@@ -165,7 +250,7 @@ export function ConversationWorkspace() {
               if (playbackRef.current !== source) return;
               playbackRef.current = null;
               const socket = socketRef.current;
-              if (socket?.readyState === WebSocket.OPEN) {
+              if (!endingRef.current && socket?.readyState === WebSocket.OPEN) {
                 socket.send(JSON.stringify({ type: "audio_finished" }));
               }
             };
@@ -192,17 +277,28 @@ export function ConversationWorkspace() {
       }
       if (message.type === "state" && message.state) {
         updateState(message.state, message.message);
+        if (message.state === "ENDED") setIsEnding(false);
         if (message.state === "INTERRUPTED" || message.state === "ENDED") stopPlayback();
       } else if (message.type === "transcript" && message.text && message.language) {
+        const transcriptText = message.text;
+        setConversationTitle((current) =>
+          current === "New conversation"
+            ? transcriptText.length > 56
+              ? `${transcriptText.slice(0, 53).trimEnd()}...`
+              : transcriptText
+            : current,
+        );
         setMessages((current) => [
           ...current,
           {
             role: "user",
-            text: message.text ?? "",
+            text: transcriptText,
             language: message.language ?? "en",
             languageProbability: message.language_probability,
+            timestamp: new Date().toISOString(),
           },
         ]);
+        onConversationUpdated();
       } else if (message.type === "assistant" && message.text && message.language) {
         setMessages((current) => [
           ...current,
@@ -210,6 +306,7 @@ export function ConversationWorkspace() {
             role: "assistant",
             text: message.text ?? "",
             language: message.language ?? "en",
+            timestamp: new Date().toISOString(),
           },
         ]);
       } else if (message.type === "error" && message.message) {
@@ -218,13 +315,19 @@ export function ConversationWorkspace() {
         setLevel(message.level);
       }
     },
-    [stopPlayback, updateState],
+    [onConversationUpdated, stopPlayback, updateState],
   );
 
   const startConversation = useCallback(async () => {
+    if (startingRef.current || socketRef.current) return;
+    startingRef.current = true;
+    setIsStarting(true);
     setError(null);
+    endingRef.current = false;
     setMessages([]);
     setLevel(0);
+    setSummary(null);
+    setSummaryError(null);
     updateState("INITIALIZING", "Requesting microphone access…");
     let socket: WebSocket | null = null;
     try {
@@ -256,13 +359,26 @@ export function ConversationWorkspace() {
       capture.connect(context.destination);
 
       const config = await getBackendConfig();
+      const created = await createConversation(language);
+      currentConversationIdRef.current = created.id;
+      loadedConversationIdRef.current = created.id;
+      setCurrentConversationId(created.id);
+      setConversationTitle(created.title);
+      onConversationCreated(created.id);
       const socketUrl = new URL("/api/v1/conversations/stream", config.baseUrl);
       socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
       socket = new WebSocket(socketUrl);
       socket.binaryType = "arraybuffer";
       socketRef.current = socket;
       socket.onopen = () => {
-        socket?.send(JSON.stringify({ type: "start", token: config.token, language }));
+        socket?.send(
+          JSON.stringify({
+            type: "start",
+            token: config.token,
+            language,
+            conversation_id: created.id,
+          }),
+        );
       };
       socket.onmessage = handleSocketEvent;
       socket.onerror = () => {
@@ -270,8 +386,10 @@ export function ConversationWorkspace() {
       };
       socket.onclose = (event) => {
         if (socketRef.current === socket) socketRef.current = null;
+        endingRef.current = false;
         stopPlayback();
         stopAudioCapture();
+        setIsEnding(false);
         if (
           event.code !== 1000 &&
           stateRef.current !== "ERROR" &&
@@ -282,9 +400,43 @@ export function ConversationWorkspace() {
         } else if (stateRef.current !== "ERROR") {
           updateState("ENDED", "The microphone is off. This conversation has ended.");
         }
+        onConversationUpdated();
+        const savedId = currentConversationIdRef.current;
+        if (savedId) {
+          void getConversation(savedId).then(
+            (detail) => {
+              if (currentConversationIdRef.current !== savedId) return;
+              setConversationTitle(detail.title);
+              setSummary(detail.summary);
+              setSummaryError(detail.summary_error);
+              setMessages(
+                detail.messages.map((message) => ({
+                  role: message.role,
+                  text: message.text,
+                  language: message.language,
+                  languageProbability: message.language_probability ?? undefined,
+                  timestamp: message.timestamp,
+                })),
+              );
+            },
+            (reason: unknown) => {
+              setError(
+                reason instanceof Error ? reason.message : "Could not reload the saved conversation.",
+              );
+            },
+          );
+        }
       };
       capture.port.onmessage = ({ data }: MessageEvent<Float32Array>) => {
-        if (socket?.readyState !== WebSocket.OPEN || socket.bufferedAmount > 64 * 1024) return;
+        if (
+          socket?.readyState !== WebSocket.OPEN ||
+          socket.bufferedAmount > 64 * 1024 ||
+          !["LISTENING", "TRANSCRIBING", "THINKING", "SPEAKING", "INTERRUPTED"].includes(
+            stateRef.current,
+          )
+        ) {
+          return;
+        }
         const monoSamples = data as Float32Array;
         const ratio = context.sampleRate / 16_000;
         const outputLength = Math.floor((monoSamples.length - 1) / ratio);
@@ -326,10 +478,14 @@ export function ConversationWorkspace() {
               : "Could not start the local voice conversation.";
       setError(detail);
       updateState("ERROR", "The microphone or local audio pipeline could not start.");
+    } finally {
+      startingRef.current = false;
+      setIsStarting(false);
     }
   }, [
     handleSocketEvent,
     language,
+    onConversationCreated,
     stopAudioCapture,
     stopPlayback,
     updateState,
@@ -352,7 +508,8 @@ export function ConversationWorkspace() {
     socketRef.current?.readyState === WebSocket.OPEN ||
     socketRef.current?.readyState === WebSocket.CONNECTING;
   const isActive = isConnected && state !== "ENDED";
-  const canStart = Boolean(readiness?.ready) && !isConnected;
+  const canStart = Boolean(readiness?.ready) && !isConnected && !isStarting;
+  const showSavedConversation = Boolean(currentConversationId && state === "ENDED");
   const availableLanguages = new Set(
     (readiness?.voices ?? []).map((voice) => voice.language.split(/[-_]/)[0].toLowerCase()),
   );
@@ -361,7 +518,7 @@ export function ConversationWorkspace() {
     <div className="conversation-workspace">
       <div className="conversation-heading">
         <div>
-          <h1>Talk to Aureon</h1>
+          <h1>{currentConversationId ? conversationTitle : "Talk to Aureon"}</h1>
         </div>
       </div>
 
@@ -373,7 +530,7 @@ export function ConversationWorkspace() {
         </div>
       )}
 
-      {!readiness?.ready ? (
+      {!readiness?.ready && !currentConversationId ? (
         <section className="voice-setup-card">
           <div className="voice-setup-icon"><ShieldCheck size={20} /></div>
           <h2>Prepare voice models</h2>
@@ -418,7 +575,9 @@ export function ConversationWorkspace() {
             )}
           </button>
         </section>
-      ) : (
+      ) : null}
+
+      {readiness?.ready && !showSavedConversation ? (
         <>
           <section className={`conversation-stage ${isActive ? "conversation-stage-active" : ""}`}>
             <div className="conversation-stage-top">
@@ -464,60 +623,129 @@ export function ConversationWorkspace() {
             </div>
             <div className="conversation-controls">
               {isActive ? (
-                <button className="voice-end-button" onClick={stopConversation} type="button">
-                  <CircleStop size={16} /> End conversation
+                <button
+                  className="voice-end-button"
+                  disabled={isEnding}
+                  onClick={stopConversation}
+                  type="button"
+                >
+                  <CircleStop size={16} /> {isEnding ? "Finishing…" : "End conversation"}
                 </button>
               ) : (
                 <button
                   className="voice-primary-button"
-                  disabled={!canStart}
+                  disabled={!canStart || Boolean(currentConversationId)}
                   onClick={() => void startConversation()}
                   type="button"
                 >
                   <Phone size={15} />
-                  {state === "ENDED" || state === "ERROR" ? "Start another conversation" : "Start conversation"}
+                  {isStarting ? "Starting…" : "Start conversation"}
                 </button>
               )}
             </div>
-            <p className="conversation-privacy"><ShieldCheck size={13} /> Audio is processed locally and not saved.</p>
-          </section>
-
-          <section className="conversation-transcript" aria-label="Conversation transcript">
-            <div className="conversation-transcript-heading">
-              <h2>Live transcript</h2>
-              {messages.length > 0 && <span>{messages.length} messages</span>}
-            </div>
-            <div className="conversation-message-list">
-              {messages.length === 0 ? (
-                null
-              ) : (
-                messages.map((message, index) => (
-                  <article className={`conversation-message message-${message.role}`} key={`${index}-${message.role}`}>
-                    <div className="conversation-message-meta">
-                      <span>{message.role === "user" ? "You" : "Aureon"}</span>
-                      <span>
-                        {languageNames[message.language]}
-                        {message.languageProbability === undefined
-                          ? ""
-                          : ` · ${Math.round(message.languageProbability * 100)}%`}
-                      </span>
-                    </div>
-                    <p>{message.text}</p>
-                  </article>
-                ))
-              )}
-              {state === "TRANSCRIBING" && (
-                <div className="conversation-live-status"><LoaderCircle className="spin" size={14} /> Transcribing…</div>
-              )}
-              {state === "THINKING" && (
-                <div className="conversation-live-status"><LoaderCircle className="spin" size={14} /> Searching catalog…</div>
-              )}
-              <div ref={messagesEndRef} />
-            </div>
+            <p className="conversation-privacy"><ShieldCheck size={13} /> Audio is not saved.</p>
           </section>
         </>
+      ) : null}
+
+      {summary && (
+        <ConversationSummaryPanel summary={summary} />
+      )}
+      {summaryError && (
+        <div className="conversation-error" role="status">
+          <AlertCircle size={16} />
+          <span>Summary unavailable: {summaryError}</span>
+        </div>
+      )}
+      {isLoadingConversation ? (
+        <div className="conversation-live-status"><LoaderCircle className="spin" size={14} /> Loading conversation…</div>
+      ) : (
+        <section className="conversation-transcript" aria-label="Conversation transcript">
+          <div className="conversation-transcript-heading">
+            <h2>{showSavedConversation ? "Transcript" : "Live transcript"}</h2>
+            {messages.length > 0 && <span>{messages.length} messages</span>}
+          </div>
+          <div className="conversation-message-list">
+            {messages.map((message, index) => (
+              <article
+                className={`conversation-message message-${message.role}`}
+                key={`${message.timestamp ?? index}-${message.role}-${index}`}
+              >
+                <div className="conversation-message-meta">
+                  <span>{message.role === "user" ? "You" : "Aureon"}</span>
+                  <span>
+                    {languageNames[message.language]}
+                    {message.languageProbability === undefined
+                      ? ""
+                      : ` · ${Math.round(message.languageProbability * 100)}%`}
+                  </span>
+                </div>
+                <p>{message.text}</p>
+              </article>
+            ))}
+            {state === "TRANSCRIBING" && (
+              <div className="conversation-live-status"><LoaderCircle className="spin" size={14} /> Transcribing…</div>
+            )}
+            {state === "THINKING" && (
+              <div className="conversation-live-status"><LoaderCircle className="spin" size={14} /> Thinking…</div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+        </section>
       )}
     </div>
+  );
+}
+
+function ConversationSummaryPanel({ summary }: { summary: ConversationSummary }) {
+  return (
+    <section className="conversation-summary" aria-label="Conversation summary">
+      <h2>Summary</h2>
+      <div className="conversation-summary-grid">
+        <SummaryField label="Customer">
+          <span>Name: {summary.customer_name}</span>
+          <span>Age: {summary.customer_age}</span>
+          <span>Location: {summary.customer_location}</span>
+          <SummaryItems items={summary.other_customer_details} />
+        </SummaryField>
+        <SummaryField label="Interests">
+          <SummaryItems items={summary.customer_interests} />
+        </SummaryField>
+        <SummaryField label="Needs">
+          <SummaryItems items={summary.customer_needs} />
+        </SummaryField>
+        <SummaryField label="Purchase">
+          <span>Intent: {summary.purchase_intent.replaceAll("_", " ")}</span>
+          <span>Outcome: {summary.purchase_outcome.replaceAll("_", " ")}</span>
+        </SummaryField>
+        <SummaryField label="Tone">{summary.tone}</SummaryField>
+        <SummaryField label="Important details">
+          <SummaryItems items={summary.important_details} />
+        </SummaryField>
+        <SummaryField label="Next steps">
+          <SummaryItems items={summary.next_steps} />
+        </SummaryField>
+      </div>
+    </section>
+  );
+}
+
+function SummaryField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="conversation-summary-field">
+      <h3>{label}</h3>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+function SummaryItems({ items }: { items: string[] }) {
+  return (
+    <>
+      {items.map((item, index) => (
+        <span key={`${index}-${item}`}>{item}</span>
+      ))}
+    </>
   );
 }
 

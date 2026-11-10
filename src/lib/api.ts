@@ -5,6 +5,8 @@ import type {
   AIJob,
   AIModelStatus,
   ConversationReadiness,
+  ConversationDetail,
+  ConversationListItem,
   Product,
   ProductAvailability,
   ProductDescriptionDraft,
@@ -139,6 +141,25 @@ export function getConversationReadiness(): Promise<ConversationReadiness> {
 
 export function installConversationModels(): Promise<ConversationReadiness> {
   return request("/api/v1/conversations/install", { method: "POST" });
+}
+
+export function createConversation(language: LanguageChoice): Promise<ConversationDetail> {
+  return request("/api/v1/conversations", {
+    method: "POST",
+    json: { language },
+  });
+}
+
+export function listConversations(): Promise<ConversationListItem[]> {
+  return request("/api/v1/conversations");
+}
+
+export function getConversation(conversationId: string): Promise<ConversationDetail> {
+  return request(`/api/v1/conversations/${conversationId}`);
+}
+
+export function deleteConversation(conversationId: string): Promise<void> {
+  return request(`/api/v1/conversations/${conversationId}`, { method: "DELETE" });
 }
 
 export async function listProducts(options: {

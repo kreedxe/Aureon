@@ -35,11 +35,56 @@ export interface ConversationReadiness {
   install_error: string | null;
 }
 
+export interface ConversationSummary {
+  title: string;
+  customer_name: string;
+  customer_age: string;
+  customer_location: string;
+  other_customer_details: string[];
+  customer_interests: string[];
+  customer_needs: string[];
+  purchase_intent: "browsing" | "comparing" | "interested" | "committed" | "unknown";
+  purchase_outcome:
+    | "purchased"
+    | "requested_more_information"
+    | "undecided"
+    | "no_purchase";
+  tone: string;
+  important_details: string[];
+  next_steps: string[];
+}
+
+export interface ConversationMessageRecord {
+  id: number;
+  role: "user" | "assistant";
+  text: string;
+  language: Exclude<LanguageChoice, "auto">;
+  timestamp: string;
+  language_probability: number | null;
+}
+
+export interface ConversationListItem {
+  id: string;
+  title: string;
+  language: LanguageChoice;
+  started_at: string;
+  ended_at: string | null;
+  status: "active" | "completed" | "failed";
+  message_count: number;
+}
+
+export interface ConversationDetail extends ConversationListItem {
+  messages: ConversationMessageRecord[];
+  summary: ConversationSummary | null;
+  summary_error: string | null;
+}
+
 export interface ConversationTranscript {
   role: "user" | "assistant";
   text: string;
   language: Exclude<LanguageChoice, "auto">;
   languageProbability?: number;
+  timestamp?: string;
 }
 export type TranscriptionStatus =
   | "not_transcribed"

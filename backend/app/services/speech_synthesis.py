@@ -49,11 +49,53 @@ class LocalSpeechSynthesizer:
 
     def _voice_for(self, language: LanguageCode) -> dict[str, str] | None:
         matches = [voice for voice in self.voices() if self._voice_language(voice) == language]
-        preferred_name = {"en": "Samantha", "ru": "Milena", "uz": ""}[language]
+        preferred_names = {
+            "en": ("Samantha", "Alex", "Ava", "Allison", "Daniel", "Karen"),
+            "ru": ("Milena",),
+            "uz": (),
+        }[language]
+        for preferred_name in preferred_names:
+            preferred_voice = next(
+                (
+                    voice
+                    for voice in matches
+                    if voice["id"].casefold() == preferred_name.casefold()
+                    or voice["id"].casefold().startswith(f"{preferred_name.casefold()} (")
+                ),
+                None,
+            )
+            if preferred_voice is not None:
+                return preferred_voice
         return next(
-            (voice for voice in matches if voice["id"] == preferred_name),
+            (voice for voice in matches if not self._is_unnatural_fallback(voice["id"])),
             matches[0] if matches else None,
         )
+
+    @staticmethod
+    def _is_unnatural_fallback(voice_id: str) -> bool:
+        voice_name = voice_id.partition(" (")[0].casefold()
+        return voice_name in {
+            "albert",
+            "bad news",
+            "bahh",
+            "bells",
+            "boing",
+            "bubbles",
+            "cellos",
+            "fred",
+            "good news",
+            "grandma",
+            "grandpa",
+            "jester",
+            "junior",
+            "organ",
+            "ralph",
+            "rocko",
+            "superstar",
+            "trinoids",
+            "wobble",
+            "zarvox",
+        }
 
     @staticmethod
     def _macos_voices() -> list[dict[str, str]]:
@@ -149,9 +191,7 @@ class LocalSpeechSynthesizer:
                     "-f",
                     "WAVE",
                     "-d",
-                    "LEI16",
-                    "-r",
-                    "16000",
+                    "LEI16@24000",
                     str(source),
                     str(destination),
                 ],

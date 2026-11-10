@@ -5,6 +5,7 @@ import {
   Check,
   Clock3,
   Mic,
+  MessageSquare,
   Moon,
   Pencil,
   Plus,
@@ -15,16 +16,20 @@ import {
   X,
 } from "lucide-react";
 import type { PropsWithChildren } from "react";
-import type { Recording } from "@/lib/types";
+import type { ConversationListItem, Recording } from "@/lib/types";
 import { formatDuration, formatRecordingDate } from "@/lib/format";
 
 interface AppShellProps extends PropsWithChildren {
   activeSection: "recordings" | "products";
   recordings: Recording[];
   selectedId: string | null;
+  conversations: ConversationListItem[];
+  selectedConversationId: string | null;
   error: string | null;
   isLight: boolean;
   onSelect: (id: string) => void;
+  onSelectConversation: (id: string) => void;
+  onDeleteConversation: (id: string) => Promise<void>;
   onNavigate: (section: "recordings" | "products") => void;
   onNewConversation: () => void;
   onRename: (id: string, name: string) => Promise<void>;
@@ -38,9 +43,13 @@ export function AppShell({
   activeSection,
   recordings,
   selectedId,
+  conversations,
+  selectedConversationId,
   error,
   isLight,
   onSelect,
+  onSelectConversation,
+  onDeleteConversation,
   onNavigate,
   onNewConversation,
   onRename,
@@ -89,6 +98,21 @@ export function AppShell({
               <Mic aria-hidden="true" className="new-recording-mic" size={15} />
             </button>
             <div className="library-heading">
+              <span>Conversations</span>
+              <span className="recording-count">{conversations.length}</span>
+            </div>
+            <div className="conversation-history-list" role="list">
+              {conversations.map((conversation) => (
+                <ConversationRow
+                  key={conversation.id}
+                  conversation={conversation}
+                  onDelete={() => onDeleteConversation(conversation.id)}
+                  onSelect={() => onSelectConversation(conversation.id)}
+                  selected={conversation.id === selectedConversationId}
+                />
+              ))}
+            </div>
+            <div className="library-heading">
               <span>Recordings</span>
               <span className="recording-count">{recordings.length}</span>
             </div>
@@ -131,7 +155,7 @@ export function AppShell({
 
       <main className="main-panel">
         <header className="topbar">
-          <div className="topbar-crumb"><span>Aureon</span><span className="crumb-slash">/</span><strong>{activeSection === "products" ? "Products" : selectedId ? "Recording" : "Voice studio"}</strong></div>
+          <div className="topbar-crumb"><span>Aureon</span><span className="crumb-slash">/</span><strong>{activeSection === "products" ? "Products" : selectedId ? "Recording" : conversations.find((item) => item.id === selectedConversationId)?.title ?? "Voice studio"}</strong></div>
           <div className="topbar-actions">
             <button
               aria-label={isLight ? "Switch to dark appearance" : "Switch to light appearance"}
@@ -152,6 +176,64 @@ export function AppShell({
         )}
         <section className="content-area">{children}</section>
       </main>
+    </div>
+  );
+}
+
+interface ConversationRowProps {
+  conversation: ConversationListItem;
+  selected: boolean;
+  onSelect: () => void;
+  onDelete: () => Promise<void>;
+}
+
+function ConversationRow({
+  conversation,
+  selected,
+  onSelect,
+  onDelete,
+}: ConversationRowProps) {
+  const [busy, setBusy] = useState(false);
+
+  async function remove(event: MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    if (busy) return;
+    setBusy(true);
+    try {
+      await onDelete();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className={`conversation-row${selected ? " selected" : ""}`} role="listitem">
+      <button
+        aria-current={selected ? "true" : undefined}
+        className="conversation-row-select"
+        onClick={onSelect}
+        type="button"
+      >
+        <MessageSquare aria-hidden="true" size={13} />
+        <span className="conversation-row-copy">
+          <span className="conversation-row-title" title={conversation.title}>
+            {conversation.title}
+          </span>
+          <span className="conversation-row-meta">
+            {formatRecordingDate(conversation.started_at)}
+            {conversation.status === "active" ? " · Active" : ""}
+          </span>
+        </span>
+      </button>
+      <button
+        aria-label={`Delete conversation ${conversation.title}`}
+        className="row-action delete-action conversation-delete"
+        disabled={busy || conversation.status === "active"}
+        onClick={(event) => void remove(event)}
+        type="button"
+      >
+        <Trash2 size={12} />
+      </button>
     </div>
   );
 }

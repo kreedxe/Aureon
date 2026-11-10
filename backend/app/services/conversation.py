@@ -7,7 +7,6 @@ import threading
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
-from uuid import uuid4
 
 import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
@@ -18,10 +17,12 @@ from app.schemas.conversations import (
     ConversationReadinessResponse,
     ConversationStart,
     ConversationState,
+    ConversationSummary,
 )
 from app.schemas.languages import LanguageCode
 from app.schemas.products import ProductResponse
 from app.services.ai_engine import LocalAIEngine
+from app.services.conversation_repository import ConversationRepository
 from app.services.products import ProductRepository
 from app.services.speech_synthesis import LocalSpeechSynthesizer
 from app.services.transcription import LocalWhisperTranscriber
@@ -35,6 +36,7 @@ class ConversationService:
     silence_frames = 20
     minimum_speech_frames = 8
     maximum_utterance_frames = 2_800
+    maximum_pending_utterances = 4
     speech_threshold = 0.55
     supported_languages = {"uz", "ru", "en"}
 
@@ -43,13 +45,19 @@ class ConversationService:
         ai_engine: LocalAIEngine,
         transcriber: LocalWhisperTranscriber,
         product_repository: ProductRepository,
+        conversation_repository: ConversationRepository | None = None,
     ) -> None:
         self.ai_engine = ai_engine
         self.transcriber = transcriber
         self.product_repository = product_repository
+        self.conversation_repository = conversation_repository or ConversationRepository(
+            product_repository.database_path
+        )
         self.vad = SileroVoiceActivityDetector()
         self.synthesizer = LocalSpeechSynthesizer()
         self._status_lock = threading.Lock()
+        self._active_conversations_lock = threading.Lock()
+        self._active_conversations: set[str] = set()
         self._install_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="aureon-voice-setup",
@@ -118,66 +126,151 @@ class ConversationService:
     def close(self) -> None:
         self._install_executor.shutdown(wait=True, cancel_futures=True)
 
+    def claim_conversation(self, conversation_id: str) -> bool:
+        with self._active_conversations_lock:
+            if conversation_id in self._active_conversations:
+                return False
+            self._active_conversations.add(conversation_id)
+            return True
+
+    def release_conversation(self, conversation_id: str) -> None:
+        with self._active_conversations_lock:
+            self._active_conversations.discard(conversation_id)
+
     async def serve(
         self,
         websocket: WebSocket,
         start: ConversationStart,
     ) -> None:
-        session_id = str(uuid4())
+        conversation_id = start.conversation_id
         state: ConversationState = "INITIALIZING"
-        history: list[dict[str, str]] = []
+        saved = self.conversation_repository.get(conversation_id)
+        history = (
+            [{"role": message.role, "content": message.text} for message in saved.messages]
+            if saved is not None
+            else []
+        )
+        del history[:-16]
         language = start.language
         voice_language: LanguageCode = "en" if language == "auto" else language
+        initialized = False
+        completed = False
         await self._send_state(websocket, state, "Loading cached local speech models…")
         try:
             await asyncio.to_thread(
                 self.load_cached_models,
                 lambda _progress, _message: None,
             )
+            initialized = True
             if voice_language not in self._available_voice_languages():
                 raise RuntimeError(
                     f"No installed offline speech voice supports {voice_language}. "
                     "Install a compatible local voice before starting this conversation."
                 )
-            state = "GREETING"
-            await self._send_state(websocket, state, "Generating a local greeting…")
-            greeting = await asyncio.to_thread(
-                self.ai_engine.generate_conversation_reply,
-                "",
-                voice_language,
-                [],
-                greeting=True,
-            )
-            greeting_audio = await asyncio.to_thread(
-                self.synthesizer.synthesize,
-                greeting,
-                voice_language,
-            )
-            history.append({"role": "assistant", "content": greeting})
-            state = "SPEAKING"
-            await self._send_json(
-                websocket,
-                {"type": "assistant", "text": greeting, "language": voice_language},
-            )
-            await self._send_state(websocket, state, "Speaking the greeting…")
-            await websocket.send_bytes(greeting_audio)
-
-            state = "SPEAKING"
+            has_greeting = any(message["role"] == "assistant" for message in history)
+            if not has_greeting:
+                state = "GREETING"
+                await self._send_state(websocket, state, "Generating a local greeting…")
+                greeting = await asyncio.to_thread(
+                    self.ai_engine.generate_conversation_reply,
+                    "",
+                    voice_language,
+                    [],
+                    greeting=True,
+                )
+                greeting_audio = await asyncio.to_thread(
+                    self.synthesizer.synthesize,
+                    greeting,
+                    voice_language,
+                )
+                await asyncio.to_thread(
+                    self.conversation_repository.append_message,
+                    conversation_id,
+                    "assistant",
+                    greeting,
+                    voice_language,
+                )
+                history.append({"role": "assistant", "content": greeting})
+                await self._send_json(
+                    websocket,
+                    {"type": "assistant", "text": greeting, "language": voice_language},
+                )
+                await self._send_state(websocket, "GREETING", "Speaking the greeting…")
+                await websocket.send_bytes(greeting_audio)
+                state = "GREETING"
+            else:
+                state = "LISTENING"
             await self._receive_audio(websocket, start, history, state)
+            completed = True
         except WebSocketDisconnect:
-            logger.info("Voice conversation %s disconnected", session_id)
+            logger.info("Voice conversation %s disconnected", conversation_id)
+            completed = initialized
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            logger.exception("Voice conversation %s failed", session_id)
+            logger.exception("Voice conversation %s failed", conversation_id)
+            await asyncio.to_thread(
+                self.conversation_repository.fail,
+                conversation_id,
+                str(error) or "The local conversation failed.",
+            )
             await self._send_state(websocket, "ERROR", "The local conversation could not continue.")
             await self._send_json(
                 websocket,
                 {"type": "error", "message": str(error) or "The local voice pipeline failed."},
             )
         finally:
+            if completed:
+                await self._finalize_conversation(websocket, conversation_id)
             try:
                 await self._send_state(websocket, "ENDED", "Conversation ended.")
+            except (RuntimeError, WebSocketDisconnect):
+                pass
+
+    async def _finalize_conversation(
+        self,
+        websocket: WebSocket,
+        conversation_id: str,
+    ) -> None:
+        try:
+            conversation = await asyncio.to_thread(
+                self.conversation_repository.get,
+                conversation_id,
+            )
+            if conversation is None:
+                raise RuntimeError("The conversation could not be loaded for its summary.")
+            if conversation.summary is not None:
+                return
+            messages = [
+                {"role": message.role, "content": message.text}
+                for message in conversation.messages
+            ]
+            summary: ConversationSummary = await asyncio.to_thread(
+                self.ai_engine.generate_conversation_summary,
+                messages,
+            )
+            await asyncio.to_thread(
+                self.conversation_repository.complete,
+                conversation_id,
+                summary,
+            )
+        except Exception as error:
+            logger.exception("Could not save summary for conversation %s", conversation_id)
+            detail = str(error) or "The local summary could not be generated."
+            await asyncio.to_thread(
+                self.conversation_repository.complete,
+                conversation_id,
+                None,
+                detail,
+            )
+            try:
+                await self._send_json(
+                    websocket,
+                    {
+                        "type": "error",
+                        "message": f"Conversation ended, but its summary failed: {detail}",
+                    },
+                )
             except (RuntimeError, WebSocketDisconnect):
                 pass
 
@@ -197,13 +290,44 @@ class ConversationService:
         silent_frame_count = 0
         voiced_frame_count = 0
         last_meter = 0.0
+        pending_utterances: list[np.ndarray] = []
         self.vad.reset()
-        await self._send_state(websocket, "LISTENING", "Listening automatically…")
+        if state == "LISTENING":
+            await self._send_state(websocket, "LISTENING", "Listening automatically…")
 
         async def change_state(new_state: ConversationState, message: str) -> None:
             nonlocal state
             state = new_state
             await self._send_state(websocket, new_state, message)
+
+        async def interrupt_if_speaking() -> None:
+            nonlocal response_task
+            if state != "SPEAKING":
+                return
+            await change_state(
+                "INTERRUPTED",
+                "Customer speech detected; stopping assistant playback.",
+            )
+            if response_task is not None and not response_task.done():
+                response_task.cancel()
+                try:
+                    await response_task
+                except asyncio.CancelledError:
+                    pass
+                response_task = None
+
+        def schedule_response(audio: np.ndarray) -> None:
+            nonlocal response_task
+            response_task = asyncio.create_task(
+                self._process_utterance(
+                    websocket,
+                    audio,
+                    start.language,
+                    history,
+                    change_state,
+                    start.conversation_id,
+                )
+            )
 
         try:
             while True:
@@ -223,12 +347,18 @@ class ConversationService:
                         continue
                     if control.type == "end":
                         return
-                    if control.type == "audio_finished" and state == "SPEAKING":
-                        await change_state("LISTENING", "Listening automatically…")
+                    if control.type == "audio_finished" and state in {"SPEAKING", "GREETING"}:
+                        if state == "SPEAKING" and pending_utterances:
+                            schedule_response(pending_utterances.pop(0))
+                        else:
+                            await change_state("LISTENING", "Listening automatically…")
                     continue
 
                 audio_bytes = message.get("bytes")
                 if not isinstance(audio_bytes, bytes):
+                    continue
+                if state in {"GREETING", "ERROR", "ENDED"}:
+                    recent_frames.clear()
                     continue
                 remainder.extend(audio_bytes)
                 while len(remainder) >= self.vad.frame_samples * 2:
@@ -236,6 +366,9 @@ class ConversationService:
                     del remainder[: self.vad.frame_samples * 2]
                     frame = np.frombuffer(frame_bytes, dtype="<i2").astype(np.float32) / 32768.0
                     probability = await asyncio.to_thread(self.vad.probability, frame)
+                    if state in {"GREETING", "ERROR", "ENDED"}:
+                        recent_frames.clear()
+                        continue
                     now = asyncio.get_running_loop().time()
                     if now - last_meter >= 0.1:
                         rms = float(np.sqrt(np.mean(np.square(frame))))
@@ -256,15 +389,11 @@ class ConversationService:
                         utterance_frames = [*recent_frames]
                         voiced_frame_count = 1
                         silent_frame_count = 0
-                        if state in {"SPEAKING", "THINKING", "TRANSCRIBING", "GREETING"}:
-                            await change_state(
-                                "INTERRUPTED",
-                                "Customer speech detected; stopping assistant playback.",
-                            )
-                            if response_task is not None and not response_task.done():
-                                response_task.cancel()
+                        await interrupt_if_speaking()
                         continue
 
+                    if is_voice:
+                        await interrupt_if_speaking()
                     utterance_frames.append(frame)
                     if is_voice:
                         voiced_frame_count += 1
@@ -284,15 +413,30 @@ class ConversationService:
                     utterance_frames = []
                     if voiced_frame_count < self.minimum_speech_frames:
                         continue
-                    response_task = asyncio.create_task(
-                        self._process_utterance(
-                            websocket,
-                            audio,
-                            start.language,
-                            history,
-                            change_state,
-                        )
-                    )
+                    if (
+                        (response_task is not None and not response_task.done())
+                        or state in {"TRANSCRIBING", "THINKING"}
+                    ):
+                        if len(pending_utterances) >= self.maximum_pending_utterances:
+                            await self._send_json(
+                                websocket,
+                                {
+                                    "type": "error",
+                                    "message": (
+                                        "Too many customer turns are queued. Wait for Aureon's "
+                                        "response before speaking again."
+                                    ),
+                                },
+                            )
+                            continue
+                        pending_utterances.append(audio)
+                        continue
+                    if pending_utterances:
+                        pending_utterances.append(audio)
+                        audio = pending_utterances.pop(0)
+                    if state not in {"LISTENING", "INTERRUPTED"}:
+                        continue
+                    schedule_response(audio)
         finally:
             if response_task is not None and not response_task.done():
                 response_task.cancel()
@@ -308,6 +452,7 @@ class ConversationService:
         requested_language: ConversationLanguage,
         history: list[dict[str, str]],
         change_state: Callable[[ConversationState, str], Awaitable[None]],
+        conversation_id: str,
     ) -> None:
         try:
             await change_state("TRANSCRIBING", "Transcribing speech locally…")
@@ -324,6 +469,14 @@ class ConversationService:
                     "Uzbek, Russian, and English."
                 )
             language = result.language if requested_language == "auto" else requested_language
+            await asyncio.to_thread(
+                self.conversation_repository.append_message,
+                conversation_id,
+                "user",
+                result.text,
+                language,
+                result.language_probability,
+            )
             await self._send_json(
                 websocket,
                 {
@@ -334,14 +487,25 @@ class ConversationService:
                 },
             )
             await change_state("THINKING", "Thinking with the local assistant…")
-            product_query = await asyncio.to_thread(
-                self.ai_engine.extract_product_query,
+            explicit_catalog_intent = self._has_explicit_catalog_intent(
                 result.text,
                 language,
-                history,
             )
-            catalog_requested = bool(product_query) or self._has_catalog_intent(
-                result.text, language
+            search_plan = (
+                await asyncio.to_thread(
+                    self.ai_engine.extract_product_query,
+                    result.text,
+                    language,
+                    history,
+                )
+                if explicit_catalog_intent
+                else None
+            )
+            catalog_requested = bool(search_plan and search_plan.catalog_requested)
+            product_query = (
+                search_plan.product_query
+                if catalog_requested and search_plan is not None
+                else None
             )
             products: list[ProductResponse] = []
             if product_query:
@@ -366,6 +530,13 @@ class ConversationService:
             if catalog_facts and catalog_facts.casefold() not in reply.casefold():
                 reply = f"{reply} {catalog_facts}"
             audio = await asyncio.to_thread(self.synthesizer.synthesize, reply, language)
+            await asyncio.to_thread(
+                self.conversation_repository.append_message,
+                conversation_id,
+                "assistant",
+                reply,
+                language,
+            )
             history.extend(
                 [
                     {"role": "user", "content": result.text},
@@ -545,44 +716,29 @@ class ConversationService:
         return matches
 
     @staticmethod
-    def _has_catalog_intent(transcript: str, language: LanguageCode) -> bool:
-        normalized = transcript.casefold()
-        keywords = {
-            "en": (
-                "price",
-                "cost",
-                "how much",
-                "stock",
-                "available",
-                "in stock",
-                "do you have",
-                "product",
-                "catalog",
-            ),
-            "ru": (
-                "цен",
-                "сто",
-                "сколько",
-                "налич",
-                "есть ли",
-                "товар",
-                "каталог",
-            ),
-            "uz": (
-                "narx",
-                "qancha",
-                "ombor",
-                "mavjud",
-                "bormi",
-                "mahsulot",
-                "tovar",
-            ),
-        }[language]
-        return any(keyword in normalized for keyword in keywords)
-
-    @staticmethod
     def _normalize_search_text(text: str) -> str:
         return re.sub(r"[^\w]+", " ", text.casefold(), flags=re.UNICODE).strip()
+
+    @staticmethod
+    def _has_explicit_catalog_intent(transcript: str, language: LanguageCode) -> bool:
+        normalized = " ".join(transcript.casefold().split())
+        patterns = {
+            "en": (
+                r"\b(?:price|cost|how much|in stock|available|do you have|"
+                r"can i buy|buy|purchase|order|recommend|looking for|catalog|product)\b",
+            ),
+            "ru": (
+                r"\b(?:сколько\s+сто(?:ит|ят)|поч[её]м|цен[ауы]|стоимост[ьи]|"
+                r"в\s+наличии|есть\s+ли\s+у\s+вас|у\s+вас\s+есть|"
+                r"можно\s+купить|купить|заказать|покажите|посоветуйте|"
+                r"подберите|ищу|каталог|товар[ауы]?|продукт[ауы]?)\b",
+            ),
+            "uz": (
+                r"\b(?:narx|qancha|ombor|mavjud|bormi|sotib\s+ol|buyurtma|"
+                r"tavsiya|mahsulot|tovar|katalog)\b",
+            ),
+        }[language]
+        return any(re.search(pattern, normalized) for pattern in patterns)
 
     @staticmethod
     async def _send_state(

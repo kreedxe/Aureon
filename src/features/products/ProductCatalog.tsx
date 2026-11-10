@@ -57,6 +57,7 @@ export function ProductCatalog() {
   const [sort, setSort] = useState<ProductSort>("name");
   const [descending, setDescending] = useState(false);
   const [editor, setEditor] = useState<EditorState>(null);
+  const [deletingProduct, setDeletingProduct] = useState<Product | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -112,14 +113,16 @@ export function ProductCatalog() {
     }
   }
 
-  async function removeProduct(product: Product) {
-    if (!window.confirm(`Delete “${product.name}” from the catalog?`)) return;
+  async function removeProduct() {
+    if (!deletingProduct) return;
     setBusy(true);
     try {
-      await deleteProduct(product.id);
+      await deleteProduct(deletingProduct.id);
+      setDeletingProduct(null);
       await loadProducts();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+      setDeletingProduct(null);
     } finally {
       setBusy(false);
     }
@@ -232,7 +235,7 @@ export function ProductCatalog() {
                 <td>
                   <div className="product-row-actions">
                     <button aria-label={`Edit ${product.name}`} onClick={() => setEditor({ product })} type="button"><Edit3 size={14} /></button>
-                    <button aria-label={`Delete ${product.name}`} disabled={busy} onClick={() => void removeProduct(product)} type="button"><Trash2 size={14} /></button>
+                    <button aria-label={`Delete ${product.name}`} disabled={busy} onClick={() => setDeletingProduct(product)} type="button"><Trash2 size={14} /></button>
                   </div>
                 </td>
               </tr>
@@ -262,6 +265,44 @@ export function ProductCatalog() {
           onSave={saveProduct}
           product={editor.product}
         />
+      )}
+
+      {deletingProduct && (
+        <div
+          className="product-dialog-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !busy) setDeletingProduct(null);
+          }}
+        >
+          <section
+            aria-labelledby="delete-product-title"
+            aria-modal="true"
+            className="product-dialog delete-confirm-dialog"
+            role="dialog"
+          >
+            <h2 id="delete-product-title">Delete product?</h2>
+            <p>{deletingProduct.name}</p>
+            <footer className="product-dialog-actions">
+              <button
+                className="product-secondary-button"
+                disabled={busy}
+                onClick={() => setDeletingProduct(null)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="product-primary-button delete-confirm-button"
+                disabled={busy}
+                onClick={() => void removeProduct()}
+                type="button"
+              >
+                {busy ? <span className="mini-spinner" /> : <Trash2 size={13} />}
+                Delete
+              </button>
+            </footer>
+          </section>
+        </div>
       )}
     </section>
   );

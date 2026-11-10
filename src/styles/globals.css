@@ -218,6 +218,51 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
   text-transform: uppercase;
 }
 .recording-count { color: var(--text-secondary); font-size: 9px; font-weight: 400; }
+.conversation-history-list {
+  display: flex;
+  max-height: 34%;
+  min-height: 0;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 0 0 6px;
+  scrollbar-color: var(--line) transparent;
+  scrollbar-width: thin;
+}
+.conversation-row {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  border: 1px solid transparent;
+}
+.conversation-row:hover, .conversation-row.selected { background: var(--hover-background); }
+.conversation-row.selected { border-color: var(--line); }
+.conversation-row-select {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 7px;
+  padding: 5px;
+  border: 0;
+  color: var(--text-secondary);
+  background: transparent;
+  text-align: left;
+}
+.conversation-row-select > svg { flex: 0 0 auto; }
+.conversation-row-copy { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.conversation-row-title {
+  overflow: hidden;
+  color: var(--app-foreground);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversation-row-meta { color: var(--text-subtle); font-size: 8px; }
+.conversation-delete { opacity: 0; }
+.conversation-row:hover .conversation-delete,
+.conversation-row:focus-within .conversation-delete,
+.conversation-row.selected .conversation-delete { opacity: 1; }
+.conversation-delete:disabled { visibility: hidden; }
 .search-field, .product-search {
   display: flex;
   height: 30px;
@@ -638,6 +683,11 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
 .product-dialog-backdrop { position: fixed; z-index: 10; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(0, 0, 0, 0.58); }
 .theme-light .product-dialog-backdrop { background: rgba(0, 0, 0, 0.36); }
 .product-dialog { width: min(100%, 560px); max-height: min(90vh, 700px); overflow: auto; padding: 16px; border: 1px solid var(--line-strong); background: var(--panel-background); }
+.delete-confirm-dialog { width: min(100%, 360px); }
+.delete-confirm-dialog h2 { margin: 0; font-size: 13px; font-weight: 600; }
+.delete-confirm-dialog > p { margin: 8px 0 0; color: var(--text-secondary); font-size: 10px; overflow-wrap: anywhere; }
+.delete-confirm-button { border-color: var(--danger); color: var(--danger); background: transparent; }
+.delete-confirm-button:hover:not(:disabled) { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--panel-background)); }
 .product-dialog-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; padding-bottom: 11px; border-bottom: 1px solid var(--line); }
 .product-dialog-header h2 { margin: 6px 0 0; font-size: 15px; font-weight: 500; }
 .product-dialog-close { display: grid; width: 26px; height: 26px; place-items: center; border: 1px solid var(--line); color: var(--text-secondary); background: transparent; }
@@ -735,6 +785,13 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
 .conversation-transcript-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); }
 .conversation-transcript-heading h2 { margin: 0; font-size: 9px; font-weight: 600; }
 .conversation-transcript-heading > span { color: var(--text-subtle); font-size: 8px; }
+.conversation-summary { flex: 0 0 auto; padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.conversation-summary > h2 { margin: 0 0 10px; font-size: 10px; font-weight: 600; }
+.conversation-summary-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 18px; }
+.conversation-summary-field { min-width: 0; }
+.conversation-summary-field h3 { margin: 0 0 4px; color: var(--text-secondary); font-size: 9px; font-weight: 600; }
+.conversation-summary-field > div { display: flex; flex-direction: column; gap: 3px; }
+.conversation-summary-field > div > span { overflow-wrap: anywhere; font-size: 9px; line-height: 1.5; }
 .conversation-message-list { display: flex; flex: 1; flex-direction: column; gap: 0; overflow-y: auto; padding: 2px 0; scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
 .conversation-empty { display: flex; min-height: 70px; align-items: center; justify-content: center; gap: 7px; color: var(--text-subtle); font-size: 9px; }
 .conversation-empty svg { display: none; }
@@ -763,6 +820,7 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
   html, body, #root { min-width: 700px; }
   .aureon-window { grid-template-columns: 190px minmax(0, 1fr); }
   .content-area { padding: 14px; }
+  .conversation-summary-grid { grid-template-columns: minmax(0, 1fr); }
   .product-filter { flex: 1; justify-content: space-between; }
   .sort-filter { flex: 0 0 auto; }
 }
